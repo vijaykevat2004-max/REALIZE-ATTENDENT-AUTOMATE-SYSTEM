@@ -1,0 +1,196 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Employee {
+  id               String        @id @default(cuid())
+  employeeCode     String        @unique
+  firstName        String
+  lastName         String
+  email            String        @unique
+  mobile           String        @unique
+  aadhaar          String?
+  pan              String?
+  gender           String        @default("MALE")
+  maritalStatus    String        @default("SINGLE")
+  dateOfBirth      String?
+  bloodGroup       String?
+  address          String?
+  city             String?
+  state            String?
+  pincode          String?
+  emergencyContact String?
+  emergencyPhone   String?
+  bankName         String?
+  bankAccount      String?
+  bankIfsc         String?
+  department       String
+  designation      String
+  shiftType        String        @default("GENERAL")
+  joinDate         String
+  exitDate         String?
+  photoUrl         String?
+  faceEmbedding    String?
+  status           String        @default("ACTIVE")
+  notes            String?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  salaryConfig    SalaryConfig?
+  attendanceLogs  AttendanceLog[]
+  leaveBalances   LeaveBalance[]
+  leaveRequests   LeaveRequest[]
+  payrollRecords  PayrollRecord[]
+}
+
+model SalaryConfig {
+  id               String   @id @default(cuid())
+  employeeId       String   @unique
+  employee         Employee @relation(fields: [employeeId], references: [id])
+  basic            Float    @default(0)
+  hra              Float    @default(0)
+  da               Float    @default(0)
+  conveyance       Float    @default(0)
+  medical          Float    @default(0)
+  specialAllowance Float    @default(0)
+  bonus            Float    @default(0)
+  otherAllowance   Float    @default(0)
+  pf               Float    @default(0)
+  pfPercent        Float    @default(12)
+  esi              Float    @default(0)
+  tds              Float    @default(0)
+  professionalTax  Float    @default(200)
+  loanDeduction    Float    @default(0)
+  otherDeduction   Float    @default(0)
+  overtimeRate     Float    @default(0)
+  effectiveFrom    String   @default("")
+}
+
+model Shift {
+  id                 String  @id @default(cuid())
+  name               String
+  type               String  @default("GENERAL")
+  startTime          String
+  endTime            String
+  breakMinutes       Int     @default(60)
+  lateThreshold      Int     @default(15)
+  earlyExitThreshold Int     @default(30)
+  isActive           Boolean @default(true)
+}
+
+model Holiday {
+  id          String  @id @default(cuid())
+  name        String
+  date        String
+  type        String  @default("Public")
+  description String?
+  isPaid      Boolean @default(true)
+}
+
+model LeaveType {
+  id           String         @id @default(cuid())
+  name         String         @unique
+  maxDays      Int            @default(0)
+  carryForward Boolean        @default(false)
+  isPaid       Boolean        @default(true)
+  color        String         @default("#3B82F6")
+  leaveBalances LeaveBalance[]
+  leaveRequests  LeaveRequest[]
+}
+
+model LeaveBalance {
+  id          String    @id @default(cuid())
+  employeeId  String
+  employee    Employee  @relation(fields: [employeeId], references: [id])
+  leaveTypeId String
+  leaveType   LeaveType @relation(fields: [leaveTypeId], references: [id])
+  year        Int
+  total       Float     @default(0)
+  used        Float     @default(0)
+
+  @@unique([employeeId, leaveTypeId, year])
+}
+
+model LeaveRequest {
+  id          String    @id @default(cuid())
+  employeeId  String
+  employee    Employee  @relation(fields: [employeeId], references: [id])
+  leaveTypeId String
+  leaveType   LeaveType @relation(fields: [leaveTypeId], references: [id])
+  startDate   String
+  endDate     String
+  days        Float
+  reason      String
+  status      String    @default("PENDING")
+  approvedBy  String?
+  remarks     String?
+  createdAt   DateTime  @default(now())
+}
+
+model AttendanceLog {
+  id               String   @id @default(cuid())
+  employeeId       String
+  employee         Employee @relation(fields: [employeeId], references: [id])
+  date             String
+  inTime           String?
+  outTime          String?
+  status           String   @default("ABSENT")
+  lateMinutes      Int      @default(0)
+  earlyExitMinutes Int      @default(0)
+  overtimeHours    Float    @default(0)
+  location         String?
+  source           String   @default("MANUAL")
+  photoUrl         String?
+  notes            String?
+
+  @@unique([employeeId, date])
+}
+
+model PayrollRecord {
+  id               String   @id @default(cuid())
+  employeeId       String
+  employee         Employee @relation(fields: [employeeId], references: [id])
+  month            Int
+  year             Int
+  basic            Float    @default(0)
+  hra              Float    @default(0)
+  da               Float    @default(0)
+  conveyance       Float    @default(0)
+  medical          Float    @default(0)
+  specialAllowance Float    @default(0)
+  bonus            Float    @default(0)
+  otherAllowance   Float    @default(0)
+  grossSalary      Float    @default(0)
+  pf               Float    @default(0)
+  esi              Float    @default(0)
+  tds              Float    @default(0)
+  professionalTax  Float    @default(0)
+  loanDeduction    Float    @default(0)
+  otherDeduction   Float    @default(0)
+  lateDeduction    Float    @default(0)
+  leaveDeduction   Float    @default(0)
+  totalDeductions  Float    @default(0)
+  overtimeAmount   Float    @default(0)
+  netSalary        Float    @default(0)
+  status           String   @default("DRAFT")
+  generatedAt      String?
+  paidAt           String?
+
+  @@unique([employeeId, month, year])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String
+  action    String
+  entity    String
+  entityId  String?
+  details   String?
+  ip        String?
+  createdAt DateTime @default(now())
+}

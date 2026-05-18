@@ -1,0 +1,35 @@
+  ▲ Next.js 14.2.35
+  - Local:        http://localhost:3000
+  - Environments: .env
+
+ ✓ Starting...
+ ✓ Ready in 1920ms
+ ✓ Compiled /api/dashboard in 325ms (59 modules)
+ GET /api/dashboard 200 in 444ms
+ ✓ Compiled /api/auth/login in 303ms (145 modules)
+ POST /api/auth/login 200 in 351ms
+ ○ Compiling / ...
+ ✓ Compiled / in 1902ms (627 modules)
+ GET / 200 in 2001ms
+ ✓ Compiled /login in 299ms (619 modules)
+ GET /login 200 in 438ms
+ ✓ Compiled /employees in 148ms (625 modules)
+ GET /employees 200 in 225ms
+ ✓ Compiled /attendance in 156ms (631 modules)
+ GET /attendance 200 in 236ms
+ ✓ Compiled /leaves in 190ms (637 modules)
+ GET /leaves 200 in 263ms
+ ✓ Compiled /salary in 172ms (643 modules)
+ GET /salary 200 in 261ms
+ ✓ Compiled /reports in 171ms (649 modules)
+ GET /reports 200 in 247ms
+ ✓ Compiled /holidays in 152ms (655 modules)
+ GET /holidays 200 in 231ms
+ ✓ Compiled /shifts in 176ms (661 modules)
+ GET /shifts 200 in 233ms
+ ✓ Compiled /settings in 156ms (667 modules)
+ GET /settings 200 in 216ms
+ ✓ Compiled /api/employees in 133ms (403 modules)
+ GET /api/employees 200 in 170ms
+
+C:\realize attendent automate system>

@@ -1,0 +1,12 @@
+node_modules/
+.next/
+dist/
+.env
+.env.local
+*.db
+*.sqlite
+prisma/dev.db
+uploads/
+
+.vercel
+.env*.local
