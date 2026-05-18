@@ -1,13 +1,13 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
-import face_recognition
+import cv2
 import numpy as np
 from io import BytesIO
 from PIL import Image
 import base64
-import time
+import json
 
 app = FastAPI(title="HRMS AI Face Service", version="2.0.0")
 
@@ -16,6 +16,10 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
+)
+
+face_cascade = cv2.CascadeClassifier(
+    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
 )
 
 class MatchRequest(BaseModel):
@@ -28,33 +32,30 @@ class BatchMatchRequest(BaseModel):
     target_embeddings: List[List[float]]
     threshold: float = 0.55
 
-def image_to_array(file_bytes: bytes) -> np.ndarray:
-    img = Image.open(BytesIO(file_bytes)).convert("RGB")
-    return np.array(img)
-
-def image_to_base64(img: Image.Image) -> str:
-    buffer = BytesIO()
-    img.save(buffer, format="JPEG", quality=95)
-    return base64.b64encode(buffer.getvalue()).decode()
+def load_image(file_bytes: bytes) -> np.ndarray:
+    arr = np.frombuffer(file_bytes, np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    return img
 
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "ai", "model": "face_recognition"}
+    return {"ok": True, "service": "ai", "method": "opencv-histogram"}
 
 @app.post("/encode-face")
 async def encode_face(image: UploadFile = File(...)):
     try:
-        img = image_to_array(await image.read())
-        locations = face_recognition.face_locations(img, model="hog")
-        if not locations:
+        img = load_image(await image.read())
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        faces = face_cascade.detectMultiScale(gray, 1.1, 5)
+        if len(faces) == 0:
             return {"success": False, "message": "No face detected"}
-        encodings = face_recognition.face_encodings(img, known_face_locations=locations)
-        return {
-            "success": True,
-            "faces": len(encodings),
-            "encodings": [enc.tolist() for enc in encodings],
-            "locations": locations
-        }
+        results = []
+        for (x, y, w, h) in faces:
+            face_roi = cv2.resize(gray[y:y+h, x:x+w], (128, 128))
+            hist = cv2.calcHist([face_roi], [0], None, [64], [0, 256])
+            cv2.normalize(hist, hist)
+            results.append(hist.flatten().tolist())
+        return {"success": True, "faces": len(results), "encodings": results, "locations": [[int(x), int(y), int(w), int(h)] for (x,y,w,h) in faces]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -94,52 +95,36 @@ def batch_match(payload: BatchMatchRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/anti-spoof")
-async def anti_spoof(image: UploadFile = File(...)):
-    return {
-        "real": True,
-        "confidence": 0.95,
-        "method": "none",
-        "note": "Anti-spoofing model coming soon"
-    }
-
 @app.post("/detect-faces")
 async def detect_faces(image: UploadFile = File(...)):
     try:
-        img = image_to_array(await image.read())
-        locations = face_recognition.face_locations(img, model="hog")
-        return {
-            "count": len(locations),
-            "locations": locations
-        }
+        img = load_image(await image.read())
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        faces = face_cascade.detectMultiScale(gray, 1.1, 5)
+        return {"count": len(faces), "locations": [[int(x), int(y), int(w), int(h)] for (x,y,w,h) in faces]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/anti-spoof")
+async def anti_spoof(image: UploadFile = File(...)):
+    return {"real": True, "confidence": 0.95, "method": "none", "note": "Coming soon"}
+
 @app.post("/watermark-image")
-async def watermark_image(
-    image: UploadFile = File(...),
-    employee_name: str = "",
-    site_name: str = "",
-    timestamp: str = "",
-    lat: str = "",
-    lng: str = ""
-):
+async def watermark_image(image: UploadFile = File(...), employee_name: str = "", site_name: str = "", timestamp: str = "", lat: str = "", lng: str = ""):
     try:
         img_bytes = await image.read()
         img = Image.open(BytesIO(img_bytes)).convert("RGB")
         from PIL import ImageDraw, ImageFont
         draw = ImageDraw.Draw(img)
         font = ImageFont.load_default()
-
         lines = [f"Name: {employee_name}", f"Site: {site_name}", f"Time: {timestamp}"]
-        if lat and lng:
-            lines.append(f"GPS: {lat}, {lng}")
-
+        if lat and lng: lines.append(f"GPS: {lat}, {lng}")
         y = img.height - 60
         for line in lines:
             draw.text((10, y), line, fill=(255, 255, 255), font=font)
             y -= 15
-
-        return {"success": True, "watermarked_image": image_to_base64(img)}
+        buffer = BytesIO()
+        img.save(buffer, format="JPEG", quality=95)
+        return {"success": True, "watermarked_image": base64.b64encode(buffer.getvalue()).decode()}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
