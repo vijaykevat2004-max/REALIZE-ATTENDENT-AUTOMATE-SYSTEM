@@ -36,9 +36,13 @@ const MOTION_FRAME_W = 80;
 const MOTION_FRAME_H = 60;
 
 function computeDistance(a: number[], b: number[]): number {
+  if (!a || !b || a.length === 0 || b.length === 0) return Infinity;
   if (a.length !== b.length) return Infinity;
   let sum = 0;
-  for (let i = 0; i < a.length; i++) sum += (a[i] - b[i]) ** 2;
+  for (let i = 0; i < a.length; i++) {
+    const d = (a[i] || 0) - (b[i] || 0);
+    sum += d * d;
+  }
   return Math.sqrt(sum);
 }
 
@@ -72,8 +76,33 @@ function KioskContent() {
   const [modelLoading, setModelLoading] = useState("");
   const [modelReady, setModelReady] = useState(false);
 
+  const [debugInfo, setDebugInfo] = useState({ models: "", employees: "", lastCapture: "", lastResult: "" });
+
   const addDet = (d: DetectionInfo) => {
     setDetections((prev) => [d, ...prev].slice(0, 100));
+  };
+
+  const testCapture = async () => {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas || !token) { addDet({ time: new Date().toLocaleTimeString(), type: "fail", message: "Kiosk not ready" }); return; }
+    canvas.width = video.videoWidth || 640;
+    canvas.height = video.videoHeight || 480;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.drawImage(video, 0, 0);
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+    const blob = await (await fetch(dataUrl)).blob();
+    const t0 = performance.now();
+    addDet({ time: new Date().toLocaleTimeString(), type: "check", message: `Encoding ${(blob.size / 1024).toFixed(1)}KB...` });
+    const encData = await encodeAllFaces(blob);
+    const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
+    const dim = encData.encodings?.[0]?.length || 0;
+    const count = encData.encodings?.length || 0;
+    const scores = encData.scores?.map(s => Math.round(s * 100)).join(", ") || "none";
+    addDet({ time: new Date().toLocaleTimeString(), type: count > 0 ? "match" : "fail", faceCount: count,
+      message: `Test: ${count} face(s), dim=${dim}, scores=[${scores}], ${elapsed}s — ${encData.message || "ok"}` });
+    setDebugInfo(d => ({ ...d, lastResult: `${count} faces dim=${dim} in ${elapsed}s` }));
   };
 
   useEffect(() => {
@@ -260,14 +289,16 @@ function KioskContent() {
   useEffect(() => {
     if (!active || known.length === 0) return;
     let running = true;
+    let frameCount = 0;
     const loop = () => {
       if (!running) return;
       animFrameRef.current = requestAnimationFrame(loop);
       try {
+        frameCount++;
         const motion = detectMotion();
         const elapsed = Date.now() - lastCaptureRef.current;
-        // Capture on motion OR at least every 8 seconds (stills)
-        if ((motion || elapsed >= 8000) && elapsed >= CAPTURE_INTERVAL) {
+        const shouldCapture = motion || elapsed >= 4000;
+        if (shouldCapture && elapsed >= CAPTURE_INTERVAL) {
           lastCaptureRef.current = Date.now();
           captureAndRecognize();
         }
@@ -329,10 +360,33 @@ function KioskContent() {
             ) : (
               <>
                 <button className="btn btn-primary" onClick={() => captureAndRecognize(true)}>📸 Capture Now</button>
+                <button className="btn btn-outline" onClick={testCapture} title="Single-frame diagnostic capture">🔍 Test</button>
                 <button className="btn btn-danger" onClick={stopKiosk}>⏹ Stop</button>
               </>
             )}
           </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 12, fontSize: 12, marginBottom: 8, color: "var(--text-muted)", flexWrap: "wrap" }}>
+          <span>📦 Models: {modelReady ? "✅ ready" : modelLoading || "loading..."}</span>
+          <span>👥 Known: {known.length} employees</span>
+          <span>📸 Captures: {capturingCount.current}</span>
+          <span>🔬 Last: {debugInfo.lastResult || "—"}</span>
+          <button className="btn btn-outline btn-sm" onClick={() => {
+            fetch("/api/employees", { headers: { Authorization: `Bearer ${token}` } })
+              .then(r => r.ok ? r.json() : [])
+              .then(d => {
+                const arr = Array.isArray(d) ? d : [];
+                const withFace = arr.filter((e: any) => e.faceEmbedding).map((e: any) => ({
+                  id: e.id, firstName: e.firstName, lastName: e.lastName,
+                  employeeCode: e.employeeCode, department: e.department,
+                  encoding: JSON.parse(e.faceEmbedding),
+                }));
+                setKnown(withFace);
+                setDebugInfo(di => ({ ...di, employees: `${withFace.length}/${arr.length}` }));
+                addDet({ time: new Date().toLocaleTimeString(), type: "info", message: `Reloaded ${withFace.length}/${arr.length} employees` });
+              });
+          }}>🔄 Reload</button>
         </div>
 
         {known.length === 0 && (
