@@ -13,23 +13,31 @@ function EmployeeForm() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [form, setForm] = useState({
-    firstName: "", lastName: "", email: "", department: "", shiftType: "GENERAL",
+    firstName: "", lastName: "", email: "", mobile: "", department: "",
   });
   const [faceStatus, setFaceStatus] = useState<"idle" | "encoding" | "done" | "error">("idle");
   const [preview, setPreview] = useState<string | null>(null);
-  const [qualityInfo, setQualityInfo] = useState<{ blurry?: boolean; dark?: boolean; score?: number } | null>(null);
+  const [camReady, setCamReady] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
+  const setField = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
 
   useEffect(() => {
     let stream: MediaStream | null = null;
     (async () => {
       try {
         stream = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240, facingMode: "user" } });
-        if (videoRef.current) videoRef.current.srcObject = stream;
-      } catch { console.log("Camera not available"); }
+        const video = videoRef.current;
+        if (video) {
+          video.srcObject = stream;
+          await video.play();
+          setCamReady(true);
+        }
+      } catch (e: any) {
+        if (e?.name === "NotAllowedError") setError("Camera permission denied. Allow camera access and refresh.");
+        else setError("Camera not available");
+      }
     })();
     return () => { if (stream) stream.getTracks().forEach((t) => t.stop()); };
   }, []);
@@ -53,7 +61,7 @@ function EmployeeForm() {
 
     try {
       const photoDataUrl = await capturePhoto();
-      if (!photoDataUrl) { setError("Camera not available"); setSaving(false); return; }
+      if (!photoDataUrl) { setError("Camera not ready — wait or refresh"); setSaving(false); return; }
       setPreview(photoDataUrl);
 
       const blob = await (await fetch(photoDataUrl)).blob();
@@ -64,19 +72,32 @@ function EmployeeForm() {
       const encRes = await fetch(`${AI_URL}/encode-face?min_det_score=0.4`, { method: "POST", body: fd });
       if (!encRes.ok) throw new Error("AI service unavailable");
       const encData = await encRes.json();
-      const q = encData.quality;
-      setQualityInfo({ blurry: q?.blurry, dark: q?.dark, score: encData.detection_scores?.[0] });
       if (!encData.success || !encData.encodings?.length) {
+        const q = encData.quality;
         if (q?.blurry) throw new Error("Photo too blurry. Hold still and try again.");
         if (q?.dark) throw new Error("Too dark. Move to better lighting.");
         throw new Error("No face detected. Look directly at camera in good lighting.");
       }
       const embedding = JSON.stringify(encData.encodings[0]);
 
+      const today = new Date().toISOString().split("T")[0];
+      const payload = {
+        firstName: form.firstName,
+        lastName: form.lastName,
+        email: form.email,
+        mobile: form.mobile || `test-${Date.now()}`,
+        department: form.department || "General",
+        designation: form.department || "Staff",
+        joinDate: today,
+        shiftType: "GENERAL",
+        photoUrl: photoDataUrl,
+        faceEmbedding: embedding,
+      };
+
       const res = await fetch("/api/employees", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ ...form, photoUrl: photoDataUrl, faceEmbedding: embedding }),
+        body: JSON.stringify(payload),
       });
       if (!res.ok) {
         const d = await res.json();
@@ -95,8 +116,8 @@ function EmployeeForm() {
     { label: "First Name", key: "firstName", required: true },
     { label: "Last Name", key: "lastName", required: true },
     { label: "Email", key: "email", type: "email", required: true },
+    { label: "Mobile", key: "mobile", type: "tel" },
     { label: "Department", key: "department" },
-    { label: "Shift", key: "shiftType", type: "select", options: ["GENERAL", "MORNING", "NIGHT"] },
   ];
 
   return (
@@ -108,7 +129,7 @@ function EmployeeForm() {
           <Link href="/employees" className="btn btn-outline">← Back</Link>
         </div>
         {error && <div className="alert alert-error">{error}</div>}
-        {faceStatus === "done" && <div className="alert alert-success">✅ Employee created with face enrollment! Redirecting...</div>}
+        {faceStatus === "done" && <div className="alert alert-success">✅ Employee created with face! Redirecting...</div>}
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 360px", gap: 16, alignItems: "start" }}>
           <div className="card">
@@ -117,20 +138,19 @@ function EmployeeForm() {
                 {fields.map((f) => (
                   <div className="form-group" key={f.key}>
                     <label>{f.label}</label>
-                    {f.type === "select" ? (
-                      <select className="form-control" value={(form as any)[f.key]} onChange={(e) => set(f.key, e.target.value)}>
-                        {f.options!.map((o) => <option key={o} value={o}>{o}</option>)}
-                      </select>
-                    ) : f.type === "textarea" ? (
-                      <textarea className="form-control" value={(form as any)[f.key]} onChange={(e) => set(f.key, e.target.value)} />
-                    ) : (
-                      <input type={f.type || "text"} className="form-control" placeholder={f.label} value={(form as any)[f.key]} onChange={(e) => set(f.key, e.target.value)} required={f.required} />
-                    )}
+                    <input
+                      type={f.type || "text"}
+                      className="form-control"
+                      placeholder={f.label}
+                      value={(form as any)[f.key]}
+                      onChange={(e) => setField(f.key, e.target.value)}
+                      required={f.required}
+                    />
                   </div>
                 ))}
               </div>
               <button type="submit" className="btn btn-primary" disabled={saving || faceStatus === "encoding"} style={{ marginTop: 16 }}>
-                {saving || faceStatus === "encoding" ? "Processing..." : "Create Employee with Face"}
+                {saving || faceStatus === "encoding" ? "Processing..." : "Create Employee"}
               </button>
             </form>
           </div>
@@ -144,8 +164,8 @@ function EmployeeForm() {
                 <>
                   <video ref={videoRef} autoPlay playsInline muted style={{ width: "100%", borderRadius: 8 }} />
                   <div style={{ position: "absolute", bottom: 8, left: 8, right: 8, textAlign: "center" }}>
-                    <span style={{ background: "rgba(0,0,0,0.6)", color: "#94a3b8", padding: "4px 12px", borderRadius: 4, fontSize: 12 }}>
-                      Camera active — face will be captured on submit
+                    <span style={{ background: "rgba(0,0,0,0.6)", color: camReady ? "#94a3b8" : "#f59e0b", padding: "4px 12px", borderRadius: 4, fontSize: 12 }}>
+                      {camReady ? "Camera ready" : "Starting camera..."}
                     </span>
                   </div>
                 </>
@@ -153,17 +173,11 @@ function EmployeeForm() {
               <canvas ref={canvasRef} style={{ display: "none" }} />
             </div>
             <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
-              {faceStatus === "idle" && <p>📸 Look at camera. Face is captured automatically when you click Create.</p>}
-              {faceStatus === "encoding" && <p>⏳ Encoding face with AI... One moment.</p>}
-              {faceStatus === "error" && (
-                <div>
-                  <p style={{ color: "var(--danger)" }}>❌ {error}</p>
-                  {qualityInfo?.blurry && <p style={{ color: "var(--warning)" }}>⚠️ Photo was blurry — hold still next time</p>}
-                  {qualityInfo?.dark && <p style={{ color: "var(--warning)" }}>⚠️ Scene too dark — move to brighter area</p>}
-                  {qualityInfo?.score !== undefined && qualityInfo.score < 0.5 && <p style={{ color: "var(--warning)" }}>⚠️ Low face confidence ({Math.round(qualityInfo.score * 100)}%) — try facing directly at camera</p>}
-                </div>
-              )}
-              {faceStatus === "done" && <p style={{ color: "var(--success)" }}>✅ Face enrolled! You&apos;ll be recognized every time at the kiosk.</p>}
+              {faceStatus === "idle" && camReady && <p>📸 Look at camera then click Create.</p>}
+              {faceStatus === "idle" && !camReady && <p>⏳ Camera starting...</p>}
+              {faceStatus === "encoding" && <p>⏳ Encoding face with AI...</p>}
+              {faceStatus === "error" && <p style={{ color: "var(--danger)" }}>❌ {error}</p>}
+              {faceStatus === "done" && <p style={{ color: "var(--success)" }}>✅ Face enrolled!</p>}
             </div>
           </div>
         </div>
