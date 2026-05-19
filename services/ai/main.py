@@ -1,5 +1,6 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List
 import cv2
@@ -9,18 +10,23 @@ from PIL import Image
 import base64
 import os
 import logging
+import traceback
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("hrms-ai")
 
 app = FastAPI(title="HRMS AI Face Service", version="5.0.0")
 
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled exception on {request.url}:\n{traceback.format_exc()}")
+    return JSONResponse(status_code=500, content={"detail": str(exc)})
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
-    allow_credentials=True,
 )
 
 # Load face cascades (built into OpenCV, no downloads)
