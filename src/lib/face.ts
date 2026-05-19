@@ -37,11 +37,17 @@ async function ensureModels(): Promise<void> {
       console.warn("TF.js ready:", e);
     }
     const base = window.location.origin + "/models";
-    loadingStatus = "Loading face detection (1/3)...";
-    await api.nets.tinyFaceDetector.loadFromUri(base);
-    loadingStatus = "Loading face landmarks (2/3)...";
+    loadingStatus = "Loading SSD MobileNet (1/5)...";
+    try {
+      await api.nets.ssdMobilenetv1.loadFromUri(base);
+      console.log("SSD MobileNet loaded");
+    } catch (e) {
+      console.warn("SSD failed, loading TinyFace:", e);
+      await api.nets.tinyFaceDetector.loadFromUri(base);
+    }
+    loadingStatus = "Loading face landmarks (2/5)...";
     await api.nets.faceLandmark68Net.loadFromUri(base);
-    loadingStatus = "Loading face recognition (3/3)...";
+    loadingStatus = "Loading face recognition (3/5)...";
     await api.nets.faceRecognitionNet.loadFromUri(base);
     modelsLoaded = true;
     loadingStatus = "";
@@ -148,32 +154,65 @@ async function detectFacesAndGetDescriptors(
     return { success: false, message: "No face detected." };
   }
 
-  // Fallback: face-api.js TinyFaceDetector
-  const opts = new api.TinyFaceDetectorOptions({ inputSize: 160, scoreThreshold: 0.1 });
-  const results = await api
-    .detectAllFaces(source, opts)
-    .withFaceLandmarks()
-    .withFaceDescriptors();
+  // Try SSD MobileNet (more accurate)
+  {
+    try {
+      const ssdOpts = new api.SsdMobilenetv1Options({ minConfidence: 0.3 });
+      const ssdResults = await api
+        .detectAllFaces(source, ssdOpts)
+        .withFaceLandmarks()
+        .withFaceDescriptors();
 
-  const encodings: FaceEncoding[] = [];
-  const locations: number[][] = [];
-  const scores: number[] = [];
-
-  for (const r of results) {
-    const desc = Array.from(r.descriptor);
-    const score = r.detection.score;
-    const box = r.detection.box;
-    if (box.width < 30 || box.height < 30) continue;
-    encodings.push(desc);
-    locations.push([box.x, box.y, box.width, box.height]);
-    scores.push(score);
+      if (ssdResults.length > 0) {
+        const encodings: FaceEncoding[] = [];
+        const locations: number[][] = [];
+        const scores: number[] = [];
+        for (const r of ssdResults) {
+          const desc = Array.from(r.descriptor);
+          const score = r.detection.score;
+          const box = r.detection.box;
+          if (box.width < 30 || box.height < 30) continue;
+          encodings.push(desc);
+          locations.push([box.x, box.y, box.width, box.height]);
+          scores.push(score);
+        }
+        if (encodings.length > 0) {
+          return { success: true, encodings, locations, scores, usedNative: false };
+        }
+      }
+    } catch (e) {
+      console.warn("SSD MobileNet detect failed:", e);
+    }
   }
 
-  if (encodings.length === 0) {
-    return { success: false, message: "No face detected." };
+  // Fallback: TinyFaceDetector
+  {
+    const opts = new api.TinyFaceDetectorOptions({ inputSize: 160, scoreThreshold: 0.1 });
+    const results = await api
+      .detectAllFaces(source, opts)
+      .withFaceLandmarks()
+      .withFaceDescriptors();
+
+    const encodings: FaceEncoding[] = [];
+    const locations: number[][] = [];
+    const scores: number[] = [];
+
+    for (const r of results) {
+      const desc = Array.from(r.descriptor);
+      const score = r.detection.score;
+      const box = r.detection.box;
+      if (box.width < 30 || box.height < 30) continue;
+      encodings.push(desc);
+      locations.push([box.x, box.y, box.width, box.height]);
+      scores.push(score);
+    }
+
+    if (encodings.length > 0) {
+      return { success: true, encodings, locations, scores, usedNative: false };
+    }
   }
 
-  return { success: true, encodings, locations, scores, usedNative: false };
+  return { success: false, message: "No face detected." };
 }
 
 // --- Public API ---
