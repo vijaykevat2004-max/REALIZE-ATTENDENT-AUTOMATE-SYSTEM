@@ -88,6 +88,10 @@ function KioskContent() {
     const video = videoRef.current;
     const canvas = canvasRef.current;
     if (!video || !canvas || !token) { addDet({ time: new Date().toLocaleTimeString(), type: "fail", message: "Kiosk not ready" }); return; }
+    if (!video.videoWidth || !video.videoHeight) {
+      addDet({ time: new Date().toLocaleTimeString(), type: "fail", message: "Video not ready (dims 0)" });
+      return;
+    }
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     canvas.width = video.videoWidth || 640;
@@ -172,11 +176,27 @@ function KioskContent() {
     fetchSheet();
   }, [token, fetchSheet]);
 
+  function waitForVideo(v: HTMLVideoElement): Promise<void> {
+    if (v.videoWidth > 0 && v.videoHeight > 0) return Promise.resolve();
+    return new Promise(resolve => {
+      const check = () => { if (v.videoWidth > 0 && v.videoHeight > 0) { cleanup(); resolve(); } };
+      const onPlaying = () => { check(); setTimeout(check, 100); };
+      v.addEventListener("playing", onPlaying);
+      v.addEventListener("canplay", onPlaying);
+      const cleanup = () => { v.removeEventListener("playing", onPlaying); v.removeEventListener("canplay", onPlaying); };
+      setTimeout(() => { cleanup(); resolve(); }, 5000);
+    });
+  }
+
   const autoStart = useCallback(async () => {
     try {
       setCamStatus("requesting camera...");
       const s = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: "user" } });
-      if (videoRef.current) videoRef.current.srcObject = s;
+      if (videoRef.current) {
+        videoRef.current.srcObject = s;
+        await waitForVideo(videoRef.current);
+        console.log(`📹 Video ready: ${videoRef.current.videoWidth}x${videoRef.current.videoHeight}`);
+      }
       setCamStatus("camera ready");
       prevFrameRef.current = null;
       setActive(true);
@@ -228,6 +248,10 @@ function KioskContent() {
     const video = videoRef.current;
     const canvas = canvasRef.current;
     if (!video || !canvas || !token || known.length === 0) return;
+    if (!video.videoWidth || !video.videoHeight) {
+      console.log("⏳ Video not ready yet (dimensions 0)");
+      return;
+    }
     if (capturingRef.current) { console.log("⏳ Already capturing, skipping"); return; }
     capturingRef.current = true;
     const safetyTimer = setTimeout(() => { capturingRef.current = false; console.log("⚠️ Safety reset capturingRef"); }, 10000);
@@ -349,8 +373,13 @@ function KioskContent() {
 
   const startKiosk = async () => {
     try {
+      setCamStatus("requesting camera...");
       const s = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: "user" } });
-      if (videoRef.current) videoRef.current.srcObject = s;
+      if (videoRef.current) {
+        videoRef.current.srcObject = s;
+        await waitForVideo(videoRef.current);
+        console.log(`📹 Video ready: ${videoRef.current.videoWidth}x${videoRef.current.videoHeight}`);
+      }
       setCamStatus("camera ready");
       prevFrameRef.current = null;
       setActive(true);
