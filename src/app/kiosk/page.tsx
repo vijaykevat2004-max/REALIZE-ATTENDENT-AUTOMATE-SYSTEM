@@ -3,7 +3,7 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import Sidebar from "@/components/Sidebar";
 import { AuthProvider, useAuth } from "@/components/AuthProvider";
 import { useRouter } from "next/navigation";
-import { encodeAllFacesFromVideo, getLoadingStatus } from "@/lib/face";
+import { encodeAllFaces, getLoadingStatus } from "@/lib/face";
 
 interface KioskEmployee {
   id: string; firstName: string; lastName: string; employeeCode: string; department: string; encoding: number[];
@@ -76,6 +76,7 @@ function KioskContent() {
   const [modelLoading, setModelLoading] = useState("");
   const [modelReady, setModelReady] = useState(false);
   const [debugOverlay, setDebugOverlay] = useState({ status: "initializing", faces: 0, dims: 0, error: "", lastOk: "" });
+  const [capturedPreview, setCapturedPreview] = useState<string | null>(null);
 
   const [debugInfo, setDebugInfo] = useState({ models: "", employees: "", lastCapture: "", lastResult: "" });
 
@@ -92,9 +93,12 @@ function KioskContent() {
     canvas.width = video.videoWidth || 640;
     canvas.height = video.videoHeight || 480;
     ctx.drawImage(video, 0, 0);
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+    setCapturedPreview(dataUrl);
+    const blob = await (await fetch(dataUrl)).blob();
     const t0 = performance.now();
-    addDet({ time: new Date().toLocaleTimeString(), type: "check", message: "Test: detecting faces from canvas..." });
-    const encData = await encodeAllFacesFromVideo(canvas);
+    addDet({ time: new Date().toLocaleTimeString(), type: "check", message: `Test: ${(blob.size/1024).toFixed(0)}KB x${canvas.width}x${canvas.height}...` });
+    const encData = await encodeAllFaces(blob);
     const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
     const dim = encData.encodings?.[0]?.length || 0;
     const count = encData.encodings?.length || 0;
@@ -215,12 +219,13 @@ function KioskContent() {
       canvas.width = video.videoWidth || 640;
       canvas.height = video.videoHeight || 480;
       ctx.drawImage(video, 0, 0);
-      frameDataUrl = canvas.toDataURL("image/jpeg", 0.85);
+      frameDataUrl = canvas.toDataURL("image/jpeg", 0.92);
+      const blob = await (await fetch(frameDataUrl)).blob();
       checkTime = new Date().toLocaleTimeString();
-      setDebugOverlay(d => ({ ...d, lastOk: `frame ${canvas.width}x${canvas.height} @ ${checkTime}` }));
-      console.log(`🔍 Detecting faces from canvas (${canvas.width}x${canvas.height})...`);
+      setDebugOverlay(d => ({ ...d, lastOk: `${canvas.width}x${canvas.height} ${(blob.size/1024).toFixed(0)}KB @ ${checkTime}` }));
+      console.log(`🔍 Detecting faces from blob (${(blob.size/1024).toFixed(0)}KB)...`);
       addDet({ time: checkTime, type: "check", message: "Detecting faces..." });
-      const encData = await encodeAllFacesFromVideo(canvas);
+      const encData = await encodeAllFaces(blob);
       const faceCount = encData.encodings?.length || 0;
       const dims = encData.encodings?.[0]?.length || 0;
       const maxScore = encData.quality?.max_detection_score ? Math.round(encData.quality.max_detection_score * 100) : 0;
@@ -447,6 +452,9 @@ function KioskContent() {
                       <span>{detections[0].confidence}%</span>
                     </div>
                   </div>
+                )}
+                {capturedPreview && (
+                  <img src={capturedPreview} alt="captured frame" style={{ position: "absolute", bottom: 60, right: 8, width: 120, border: "2px solid #fff", borderRadius: 4 }} />
                 )}
               </div>
             ) : (
