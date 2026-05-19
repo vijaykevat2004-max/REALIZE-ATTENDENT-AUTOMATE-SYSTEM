@@ -19,7 +19,16 @@ export default function FaceCapture({ onCapture }: Props) {
       streamRef.current = s;
       if (video.current) video.current.srcObject = s;
       setCam(true);
-      setTimeout(() => setReady(true), 1000);
+      // wait for video to have real dimensions
+      const v = video.current;
+      if (v) {
+        v.play();
+        for (let i = 0; i < 50; i++) {
+          if (v.videoWidth > 0 && v.videoHeight > 0) break;
+          await new Promise((r) => setTimeout(r, 100));
+        }
+      }
+      setReady(true);
     } catch { alert("Camera access denied"); }
   }, []);
 

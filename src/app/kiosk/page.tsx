@@ -157,16 +157,20 @@ function KioskContent() {
     fetchSheet();
   }, [token, fetchSheet]);
 
-  function waitForVideo(v: HTMLVideoElement): Promise<void> {
-    if (v.videoWidth > 0 && v.videoHeight > 0) return Promise.resolve();
+  function waitForVideo(v: HTMLVideoElement): Promise<boolean> {
+    if (v.videoWidth > 0 && v.videoHeight > 0) return Promise.resolve(true);
     return new Promise(resolve => {
+      let tries = 0;
       const check = setInterval(() => {
+        tries++;
         if (v.videoWidth > 0 && v.videoHeight > 0 && !v.paused) {
           clearInterval(check);
-          resolve();
+          resolve(true);
+        } else if (tries > 80) {
+          clearInterval(check);
+          resolve(v.videoWidth > 0 && v.videoHeight > 0);
         }
       }, 100);
-      setTimeout(() => { clearInterval(check); resolve(); }, 8000);
     });
   }
 
@@ -176,16 +180,15 @@ function KioskContent() {
       const s = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: "user" } });
       if (videoRef.current) {
         videoRef.current.srcObject = s;
-        videoRef.current.play().catch(() => {});
-        await waitForVideo(videoRef.current);
-        console.log(`📹 Video ready: ${videoRef.current.videoWidth}x${videoRef.current.videoHeight} paused=${videoRef.current.paused}`);
+        try { await videoRef.current.play(); } catch {}
+        const ok = await waitForVideo(videoRef.current);
+        if (!ok) { setCamStatus("camera timeout"); return; }
       }
       setCamStatus("camera ready");
       prevFrameRef.current = null;
       setActive(true);
       setDetections([]);
       addDet({ time: new Date().toLocaleTimeString(), type: "info", message: "Kiosk started" });
-      // Warm up AI service
       aiWarmUp().then(ok => {
         if (ok) { setModelReady(true); addDet({ time: new Date().toLocaleTimeString(), type: "info", message: "AI service connected" }); }
         else { addDet({ time: new Date().toLocaleTimeString(), type: "info", message: "AI service warming up (slow first request)" }); }
@@ -353,9 +356,9 @@ function KioskContent() {
       const s = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: "user" } });
       if (videoRef.current) {
         videoRef.current.srcObject = s;
-        videoRef.current.play().catch(() => {});
-        await waitForVideo(videoRef.current);
-        console.log(`📹 Video ready: ${videoRef.current.videoWidth}x${videoRef.current.videoHeight} paused=${videoRef.current.paused}`);
+        try { await videoRef.current.play(); } catch {}
+        const ok = await waitForVideo(videoRef.current);
+        if (!ok) { setCamStatus("camera timeout"); addDet({ time: new Date().toLocaleTimeString(), type: "fail", message: "Camera not ready" }); return; }
       }
       setCamStatus("camera ready");
       prevFrameRef.current = null;
