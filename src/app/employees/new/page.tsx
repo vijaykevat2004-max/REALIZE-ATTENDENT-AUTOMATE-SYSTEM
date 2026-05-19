@@ -106,7 +106,9 @@ function EmployeeForm() {
       setFaceStatus("done");
       setTimeout(() => router.push("/employees"), 1500);
     } catch (err: any) {
-      setError(err.message);
+      const msg = err.message || "Error";
+      if (msg === "Failed to fetch") setError("AI service unreachable. Go to Render dashboard → hrms-ai → Manual Deploy to redeploy.");
+      else setError(msg);
       setFaceStatus("error");
     }
     setSaving(false);
