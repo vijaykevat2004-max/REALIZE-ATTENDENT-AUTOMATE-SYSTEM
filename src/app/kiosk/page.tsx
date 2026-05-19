@@ -441,7 +441,7 @@ function KioskContent() {
         <div className="grid-2" style={{ marginBottom: 24 }}>
           <div className="card">
             <h3 style={{ marginBottom: 12, fontSize: 15 }}>Live Camera {active ? "🟢" : "⚫"}</h3>
-            {active ? (
+            <div style={{ display: active ? "block" : "none" }}>
               <div className="camera-wrap" style={{ position: "relative" }}>
                 <video ref={videoRef} autoPlay playsInline muted style={{ width: "100%", borderRadius: 8 }} />
                 <canvas ref={canvasRef} style={{ display: "none" }} />
@@ -484,7 +484,8 @@ function KioskContent() {
                   <img src={capturedPreview} alt="captured frame" style={{ position: "absolute", bottom: 60, right: 8, width: 120, border: "2px solid #fff", borderRadius: 4 }} />
                 )}
               </div>
-            ) : (
+            </div>
+            {!active && (
               <div className="map-placeholder">
                 <div style={{ fontSize: 48, marginBottom: 8 }}>📷</div>
                 <div>Camera off</div>
