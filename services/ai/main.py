@@ -62,9 +62,21 @@ def load_image(file_bytes: bytes) -> np.ndarray:
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     return img
 
+def to_py(val):
+    """Convert numpy values to native Python types for JSON serialization."""
+    if isinstance(val, np.bool_):
+        return bool(val)
+    if isinstance(val, (np.integer, np.intc)):
+        return int(val)
+    if isinstance(val, (np.floating, np.float_)):
+        return float(val)
+    if isinstance(val, np.ndarray):
+        return val.tolist()
+    return val
+
 def check_quality(img: np.ndarray) -> dict:
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    blur_score = cv2.Laplacian(gray, cv2.CV_64F).var()
+    blur_score = float(cv2.Laplacian(gray, cv2.CV_64F).var())
     brightness = float(np.mean(gray))
     return {
         "blurry": blur_score < 80,
@@ -74,33 +86,29 @@ def check_quality(img: np.ndarray) -> dict:
         "good_quality": blur_score >= 80 and 40 <= brightness <= 230,
     }
 
+def safe_detect(cascade, img, scaleFactor=1.1, minNeighbors=3, minSize=(60, 60)):
+    """Safely run detectMultiScale and return empty list on failure."""
+    try:
+        faces = cascade.detectMultiScale(img, scaleFactor=scaleFactor, minNeighbors=minNeighbors, minSize=minSize, flags=cv2.CASCADE_SCALE_IMAGE)
+        if faces is None or (isinstance(faces, np.ndarray) and len(faces) == 0):
+            return []
+        result = []
+        for rect in faces:
+            if len(rect) >= 4:
+                result.append((int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3])))
+        return result
+    except Exception:
+        return []
+
 def detect_faces_multi(img: np.ndarray, min_neighbors: int = 3, min_size: int = 60) -> List[tuple]:
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    # Enhance contrast for better detection
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     enhanced = clahe.apply(gray)
     all_faces = []
     for cascade in cascades:
-        faces = cascade.detectMultiScale(
-            enhanced,
-            scaleFactor=1.1,
-            minNeighbors=min_neighbors,
-            minSize=(min_size, min_size),
-            flags=cv2.CASCADE_SCALE_IMAGE,
-        )
-        for (x, y, w, h) in faces:
-            all_faces.append((x, y, w, h))
-    # Also try on original (non-enhanced) image as fallback
+        all_faces.extend(safe_detect(cascade, enhanced, 1.1, min_neighbors, (min_size, min_size)))
     for cascade in cascades:
-        faces = cascade.detectMultiScale(
-            gray,
-            scaleFactor=1.15,
-            minNeighbors=min_neighbors + 1,
-            minSize=(min_size, min_size),
-        )
-        for (x, y, w, h) in faces:
-            all_faces.append((x, y, w, h))
-    # Merge overlapping detections (simple NMS)
+        all_faces.extend(safe_detect(cascade, gray, 1.15, min_neighbors + 1, (min_size, min_size)))
     if not all_faces:
         return []
     boxes = np.array(all_faces, dtype=np.float32)
@@ -112,18 +120,20 @@ def detect_faces_multi(img: np.ndarray, min_neighbors: int = 3, min_size: int = 
         x2 = boxes[:, 0] + boxes[:, 2]
         y2 = boxes[:, 1] + boxes[:, 3]
         areas = (x2 - x1 + 1) * (y2 - y1 + 1)
-        idxs = np.argsort(boxes[:, 2] * boxes[:, 3])[::-1]  # sort by area descending
+        idxs = np.argsort(boxes[:, 2] * boxes[:, 3])[::-1]
         while len(idxs) > 0:
-            last = len(idxs) - 1
-            i = idxs[0]
+            i = int(idxs[0])
             picked.append(i)
-            xx1 = np.maximum(x1[i], x1[idxs[1:]])
-            yy1 = np.maximum(y1[i], y1[idxs[1:]])
-            xx2 = np.minimum(x2[i], x2[idxs[1:]])
-            yy2 = np.minimum(y2[i], y2[idxs[1:]])
+            rest = idxs[1:]
+            if len(rest) == 0:
+                break
+            xx1 = np.maximum(x1[i], x1[rest])
+            yy1 = np.maximum(y1[i], y1[rest])
+            xx2 = np.minimum(x2[i], x2[rest])
+            yy2 = np.minimum(y2[i], y2[rest])
             w_n = np.maximum(0, xx2 - xx1 + 1)
             h_n = np.maximum(0, yy2 - yy1 + 1)
-            overlap = (w_n * h_n) / areas[idxs[1:]]
+            overlap = (w_n * h_n) / areas[rest]
             idxs = np.delete(idxs, np.concatenate(([0], np.where(overlap > 0.3)[0] + 1)))
     result = [(int(boxes[i][0]), int(boxes[i][1]), int(boxes[i][2]), int(boxes[i][3])) for i in picked]
     return result
