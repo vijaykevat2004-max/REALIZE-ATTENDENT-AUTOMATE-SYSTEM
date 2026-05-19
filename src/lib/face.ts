@@ -5,6 +5,11 @@ let faceapi: FaceApiModule | null = null;
 
 let modelsLoaded = false;
 let loadPromise: Promise<void> | null = null;
+let loadingStatus = "";
+
+export function getLoadingStatus(): string {
+  return loadingStatus;
+}
 
 async function getFaceApi(): Promise<FaceApiModule> {
   if (!faceapi) {
@@ -19,10 +24,14 @@ async function ensureModels(): Promise<void> {
   loadPromise = (async () => {
     const api = await getFaceApi();
     const base = window.location.origin + "/models";
+    loadingStatus = "Loading face detection (1/3)...";
     await api.nets.tinyFaceDetector.loadFromUri(base);
+    loadingStatus = "Loading face landmarks (2/3)...";
     await api.nets.faceLandmark68Net.loadFromUri(base);
+    loadingStatus = "Loading face recognition (3/3)...";
     await api.nets.faceRecognitionNet.loadFromUri(base);
     modelsLoaded = true;
+    loadingStatus = "";
   })();
   return loadPromise;
 }
@@ -48,11 +57,13 @@ function imageBlobToElement(blob: Blob): Promise<HTMLImageElement> {
   });
 }
 
-export async function encodeFace(
+export async function encodeAllFaces(
   imageBlob: Blob
 ): Promise<{
   success: boolean;
   encodings?: FaceEncoding[];
+  locations?: number[][];
+  scores?: number[];
   message?: string;
   quality?: QualityResult;
 }> {
@@ -63,34 +74,72 @@ export async function encodeFace(
     if (!img.width || !img.height) {
       return { success: false, message: "Invalid image" };
     }
-    const result = await api
-      .detectSingleFace(img, new api.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.3 }))
+
+    const opts = new api.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.2 });
+    const results = await api
+      .detectAllFaces(img, opts)
       .withFaceLandmarks()
-      .withFaceDescriptor();
-    if (!result) {
+      .withFaceDescriptors();
+
+    const encodings: FaceEncoding[] = [];
+    const locations: number[][] = [];
+    const scores: number[] = [];
+
+    for (const r of results) {
+      const desc = Array.from(r.descriptor);
+      const score = r.detection.score;
+      const box = r.detection.box;
+      if (box.width < 30 || box.height < 30) continue;
+      encodings.push(desc);
+      locations.push([box.x, box.y, box.width, box.height]);
+      scores.push(score);
+    }
+
+    if (encodings.length === 0) {
       return { success: false, message: "No face detected. Look directly at camera in good lighting." };
     }
-    const descriptor = Array.from(result.descriptor);
-    const score = result.detection.score;
-    const box = result.detection.box;
-    const blur_score = Math.round(score * 100);
-    const faceRatio = (box.width * box.height) / (img.width * img.height);
+
+    const maxScore = Math.max(...scores);
+    const blurScore = Math.round(maxScore * 100);
+
     return {
       success: true,
-      encodings: [descriptor],
+      encodings,
+      locations,
+      scores,
       quality: {
-        blurry: score < 0.5,
-        blur_score,
+        blurry: maxScore < 0.3,
+        blur_score: blurScore,
         dark: false,
         brightness: 128,
-        good_quality: score >= 0.5 && faceRatio >= 0.02,
-        face_count: 1,
-        max_detection_score: score,
+        good_quality: maxScore >= 0.4,
+        face_count: encodings.length,
+        max_detection_score: maxScore,
       },
     };
   } catch (err: any) {
-    return { success: false, message: err.message || "Face encoding failed" };
+    return { success: false, message: err.message || "Face processing failed" };
   }
+}
+
+export async function encodeFace(
+  imageBlob: Blob
+): Promise<{
+  success: boolean;
+  encodings?: FaceEncoding[];
+  message?: string;
+  quality?: QualityResult;
+}> {
+  const result = await encodeAllFaces(imageBlob);
+  if (result.success && result.encodings && result.encodings.length > 0) {
+    return {
+      success: true,
+      encodings: [result.encodings[0]],
+      message: result.message,
+      quality: result.quality,
+    };
+  }
+  return { success: false, message: result.message, quality: result.quality };
 }
 
 export async function detectFace(
@@ -100,9 +149,8 @@ export async function detectFace(
     const api = await getFaceApi();
     await ensureModels();
     const img = await imageBlobToElement(imageBlob);
-    const results = await api
-      .detectAllFaces(img, new api.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.3 }))
-      .withFaceLandmarks();
+    const opts = new api.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.2 });
+    const results = await api.detectAllFaces(img, opts).withFaceLandmarks();
     return {
       count: results.length,
       locations: results.map((r) => [r.detection.box.x, r.detection.box.y, r.detection.box.width, r.detection.box.height]),
@@ -118,16 +166,15 @@ export async function checkQuality(imageBlob: Blob): Promise<QualityResult> {
     const api = await getFaceApi();
     await ensureModels();
     const img = await imageBlobToElement(imageBlob);
-    const results = await api
-      .detectAllFaces(img, new api.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.3 }));
+    const results = await api.detectAllFaces(img, new api.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.2 }));
     const scores = results.map((r) => r.score);
     const maxScore = scores.length ? Math.max(...scores) : 0;
     return {
-      blurry: maxScore < 0.5,
+      blurry: maxScore < 0.3,
       blur_score: Math.round(maxScore * 100),
       dark: false,
       brightness: 128,
-      good_quality: maxScore >= 0.5 && results.length > 0,
+      good_quality: maxScore >= 0.4 && results.length > 0,
       face_count: results.length,
       max_detection_score: maxScore,
     };
@@ -137,6 +184,8 @@ export async function checkQuality(imageBlob: Blob): Promise<QualityResult> {
 }
 
 export function computeDistance(a: FaceEncoding, b: FaceEncoding): number {
+  if (!a || !b || a.length === 0 || b.length === 0) return Infinity;
+  if (a.length !== b.length) return Infinity;
   let sum = 0;
   for (let i = 0; i < a.length; i++) sum += (a[i] - b[i]) ** 2;
   return Math.sqrt(sum);

@@ -3,7 +3,7 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import Sidebar from "@/components/Sidebar";
 import { AuthProvider, useAuth } from "@/components/AuthProvider";
 import { useRouter } from "next/navigation";
-import { encodeFace } from "@/lib/face";
+import { encodeAllFaces, getLoadingStatus } from "@/lib/face";
 
 interface KioskEmployee {
   id: string; firstName: string; lastName: string; employeeCode: string; department: string; encoding: number[];
@@ -69,6 +69,8 @@ function KioskContent() {
   const capturingCount = useRef(0);
   const [stats, setStats] = useState({ total: 0, enrolled: 0, todayIn: 0, todayOut: 0, activeNow: 0 });
   const [camStatus, setCamStatus] = useState("initializing");
+  const [modelLoading, setModelLoading] = useState("");
+  const [modelReady, setModelReady] = useState(false);
 
   const addDet = (d: DetectionInfo) => {
     setDetections((prev) => [d, ...prev].slice(0, 100));
@@ -127,6 +129,17 @@ function KioskContent() {
       setActive(true);
       setDetections([]);
       addDet({ time: new Date().toLocaleTimeString(), type: "info", message: "Kiosk started automatically" });
+      // Monitor model loading
+      const checkModels = setInterval(() => {
+        const status = getLoadingStatus();
+        if (status) { setModelLoading(status); addDet({ time: new Date().toLocaleTimeString(), type: "info", message: status }); }
+        if (!status) {
+          setModelLoading("");
+          setModelReady(true);
+          clearInterval(checkModels);
+          addDet({ time: new Date().toLocaleTimeString(), type: "info", message: "Face recognition model ready" });
+        }
+      }, 500);
     } catch (e: any) {
       setCamStatus("camera blocked");
       addDet({ time: new Date().toLocaleTimeString(), type: "info", message: "Camera access denied. Click Start Kiosk manually." });
@@ -175,15 +188,16 @@ function KioskContent() {
       frameDataUrl = canvas.toDataURL("image/jpeg", 0.85);
       const blob = await (await fetch(frameDataUrl)).blob();
       checkTime = new Date().toLocaleTimeString();
-      console.log(`🔍 Encoding face locally (${(blob.size / 1024).toFixed(1)}KB)...`);
-      addDet({ time: checkTime, type: "check", message: "Encoding face locally..." });
-      const encData = await encodeFace(blob);
+      console.log(`🔍 Encoding faces locally (${(blob.size / 1024).toFixed(1)}KB)...`);
+      addDet({ time: checkTime, type: "check", message: "Detecting faces..." });
+      const encData = await encodeAllFaces(blob);
       const faceCount = encData.encodings?.length || 0;
-      addDet({ time: checkTime, type: "check", faceCount, message: `Detected ${faceCount} face(s)` });
-      console.log(`🤖 Browser face-api: success=${encData.success}, message=${encData.message || "ok"}`);
+      const maxScore = encData.quality?.max_detection_score ? Math.round(encData.quality.max_detection_score * 100) : 0;
+      addDet({ time: checkTime, type: "check", faceCount, message: `Detected ${faceCount} face(s) (confidence: ${maxScore}%)` });
+      console.log(`🤖 face-api: faces=${faceCount}, success=${encData.success}, message=${encData.message || "ok"}`);
       if (!encData.success || !encData.encodings?.length) {
         addDet({ time: checkTime, type: "fail", faceCount: 0, message: encData.message || "No face detected" });
-        console.log(`❌ AI detection failed: ${encData.message || "No face"}`);
+        console.log(`❌ Detection failed: ${encData.message || "No face"}`);
         capturingRef.current = false;
         return;
       }
@@ -201,7 +215,7 @@ function KioskContent() {
         }
         const emp = known[bestIdx];
         if (bestDist === Infinity) {
-          addDet({ time: checkTime, type: "fail", message: `Dimension mismatch: AI returned ${target.length}-dim, enrolled face is ${emp.encoding.length}-dim. Re-enroll face.` });
+          addDet({ time: checkTime, type: "fail", message: `Dimension mismatch: face-api ${target.length}-dim vs enrolled ${emp.encoding.length}-dim. Re-enroll face.` });
           continue;
         }
         const dist = Math.round(bestDist * 1000) / 1000;
@@ -327,6 +341,11 @@ function KioskContent() {
           </div>
         )}
 
+        {modelLoading && (
+          <div className="alert alert-info" style={{ marginBottom: 12, fontSize: 13 }}>
+            ⏳ {modelLoading}
+          </div>
+        )}
         <div className="grid-2" style={{ marginBottom: 24 }}>
           <div className="card">
             <h3 style={{ marginBottom: 12, fontSize: 15 }}>Live Camera {active ? "🟢" : "⚫"}</h3>
