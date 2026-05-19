@@ -3,7 +3,7 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import Sidebar from "@/components/Sidebar";
 import { AuthProvider, useAuth } from "@/components/AuthProvider";
 import { useRouter } from "next/navigation";
-import { encodeAllFaces, encodeAllFacesFromVideo, getLoadingStatus } from "@/lib/face";
+import { encodeAllFacesFromVideo, getLoadingStatus } from "@/lib/face";
 
 interface KioskEmployee {
   id: string; firstName: string; lastName: string; employeeCode: string; department: string; encoding: number[];
@@ -385,7 +385,7 @@ function KioskContent() {
 
         <div style={{ display: "flex", gap: 12, fontSize: 12, marginBottom: 8, color: "var(--text-muted)", flexWrap: "wrap" }}>
           <span>📦 Models: {modelReady ? "✅ ready" : modelLoading || "loading..."}</span>
-          <span>🔍 Detect: {typeof (window as any).FaceDetector !== "undefined" ? "🍎 Native" : "🐍 TinyFace"}</span>
+          <span>🔍 TinyFace</span>
           <span>👥 Known: {known.length} employees</span>
           <span>📸 Captures: {capturingCount.current}</span>
           <span>🔬 Last: {debugInfo.lastResult || "—"}</span>

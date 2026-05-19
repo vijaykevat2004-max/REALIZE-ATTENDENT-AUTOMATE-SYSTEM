@@ -17,9 +17,8 @@ async function getFaceApi(): Promise<FaceApiModule> {
     try {
       await (faceapi.tf as any).setBackend("cpu");
       await (faceapi.tf as any).ready();
-      console.log("TF.js backend: cpu (forced)");
     } catch (e) {
-      console.warn("TF.js CPU backend failed:", e);
+      console.warn("TF.js CPU backend:", e);
     }
   }
   return faceapi;
@@ -32,22 +31,15 @@ async function ensureModels(): Promise<void> {
     const api = await getFaceApi();
     try {
       await (api.tf as any).ready();
-      console.log("TF.js backend:", (api.tf as any).getBackend());
     } catch (e) {
       console.warn("TF.js ready:", e);
     }
     const base = window.location.origin + "/models";
-    loadingStatus = "Loading SSD MobileNet (1/5)...";
-    try {
-      await api.nets.ssdMobilenetv1.loadFromUri(base);
-      console.log("SSD MobileNet loaded");
-    } catch (e) {
-      console.warn("SSD failed, loading TinyFace:", e);
-      await api.nets.tinyFaceDetector.loadFromUri(base);
-    }
-    loadingStatus = "Loading face landmarks (2/5)...";
+    loadingStatus = "Loading TinyFace detector...";
+    await api.nets.tinyFaceDetector.loadFromUri(base);
+    loadingStatus = "Loading face landmarks...";
     await api.nets.faceLandmark68Net.loadFromUri(base);
-    loadingStatus = "Loading face recognition (3/5)...";
+    loadingStatus = "Loading face recognition...";
     await api.nets.faceRecognitionNet.loadFromUri(base);
     modelsLoaded = true;
     loadingStatus = "";
@@ -75,46 +67,7 @@ async function ensureLoaded(img: HTMLImageElement): Promise<HTMLImageElement> {
   });
 }
 
-// --- Native FaceDetector API (Apple/iOS Safari) ---
-interface NativeFaceBox {
-  x: number; y: number; width: number; height: number;
-}
-
-let nativeDetector: any = null;
-
-function getNativeDetector(): any {
-  if (nativeDetector) return nativeDetector;
-  if (typeof (window as any).FaceDetector !== "undefined") {
-    nativeDetector = new (window as any).FaceDetector({
-      maxDetectedFaces: 10,
-      fastMode: true,
-    });
-    return nativeDetector;
-  }
-  return null;
-}
-
-async function detectWithNative(
-  source: HTMLVideoElement | HTMLCanvasElement | HTMLImageElement
-): Promise<NativeFaceBox[] | null> {
-  const detector = getNativeDetector();
-  if (!detector) return null;
-  try {
-    const faces = await detector.detect(source);
-    if (!faces || faces.length === 0) return [];
-    return faces.map((f: any) => ({
-      x: f.boundingBox.x,
-      y: f.boundingBox.y,
-      width: f.boundingBox.width,
-      height: f.boundingBox.height,
-    }));
-  } catch (e) {
-    return null;
-  }
-}
-
-// --- Core: detect + get descriptors using native or fallback ---
-async function detectFacesAndGetDescriptors(
+async function detectWithFaceApi(
   source: HTMLVideoElement | HTMLCanvasElement | HTMLImageElement
 ): Promise<{
   success: boolean;
@@ -122,100 +75,36 @@ async function detectFacesAndGetDescriptors(
   locations?: number[][];
   scores?: number[];
   message?: string;
-  usedNative?: boolean;
 }> {
   const api = await getFaceApi();
   await ensureModels();
 
-  // Try native FaceDetector first (Apple/iOS)
-  let nativeBoxes: NativeFaceBox[] | null = null;
-  try { nativeBoxes = await detectWithNative(source); } catch {}
-  
-  if (nativeBoxes !== null && nativeBoxes.length > 0) {
-    const rects = nativeBoxes.map(b => new api.Rect(b.x, b.y, b.width, b.height));
-    const alignedFaces = await api.extractFaces(source, rects);
-    const encodings: FaceEncoding[] = [];
-    const locations: number[][] = [];
-    const scores: number[] = [];
+  const opts = new api.TinyFaceDetectorOptions({ inputSize: 160, scoreThreshold: 0.1 });
+  const results = await api
+    .detectAllFaces(source, opts)
+    .withFaceLandmarks()
+    .withFaceDescriptors();
 
-    for (let i = 0; i < alignedFaces.length; i++) {
-      let desc = await api.nets.faceRecognitionNet.computeFaceDescriptor(alignedFaces[i]);
-      if (Array.isArray(desc)) desc = desc[0];
-      const box = nativeBoxes[i];
-      if (box.width < 30 || box.height < 30) continue;
-      encodings.push(Array.from(desc));
-      locations.push([box.x, box.y, box.width, box.height]);
-      scores.push(1.0);
-    }
+  const encodings: FaceEncoding[] = [];
+  const locations: number[][] = [];
+  const scores: number[] = [];
 
-    if (encodings.length > 0) {
-      return { success: true, encodings, locations, scores, message: "", usedNative: true };
-    }
+  for (const r of results) {
+    const desc = Array.from(r.descriptor);
+    const score = r.detection.score;
+    const box = r.detection.box;
+    if (box.width < 30 || box.height < 30) continue;
+    encodings.push(desc);
+    locations.push([box.x, box.y, box.width, box.height]);
+    scores.push(score);
+  }
+
+  if (encodings.length === 0) {
     return { success: false, message: "No face detected." };
   }
 
-  // Try SSD MobileNet (more accurate)
-  {
-    try {
-      const ssdOpts = new api.SsdMobilenetv1Options({ minConfidence: 0.3 });
-      const ssdResults = await api
-        .detectAllFaces(source, ssdOpts)
-        .withFaceLandmarks()
-        .withFaceDescriptors();
-
-      if (ssdResults.length > 0) {
-        const encodings: FaceEncoding[] = [];
-        const locations: number[][] = [];
-        const scores: number[] = [];
-        for (const r of ssdResults) {
-          const desc = Array.from(r.descriptor);
-          const score = r.detection.score;
-          const box = r.detection.box;
-          if (box.width < 30 || box.height < 30) continue;
-          encodings.push(desc);
-          locations.push([box.x, box.y, box.width, box.height]);
-          scores.push(score);
-        }
-        if (encodings.length > 0) {
-          return { success: true, encodings, locations, scores, usedNative: false };
-        }
-      }
-    } catch (e) {
-      console.warn("SSD MobileNet detect failed:", e);
-    }
-  }
-
-  // Fallback: TinyFaceDetector
-  {
-    const opts = new api.TinyFaceDetectorOptions({ inputSize: 160, scoreThreshold: 0.1 });
-    const results = await api
-      .detectAllFaces(source, opts)
-      .withFaceLandmarks()
-      .withFaceDescriptors();
-
-    const encodings: FaceEncoding[] = [];
-    const locations: number[][] = [];
-    const scores: number[] = [];
-
-    for (const r of results) {
-      const desc = Array.from(r.descriptor);
-      const score = r.detection.score;
-      const box = r.detection.box;
-      if (box.width < 30 || box.height < 30) continue;
-      encodings.push(desc);
-      locations.push([box.x, box.y, box.width, box.height]);
-      scores.push(score);
-    }
-
-    if (encodings.length > 0) {
-      return { success: true, encodings, locations, scores, usedNative: false };
-    }
-  }
-
-  return { success: false, message: "No face detected." };
+  return { success: true, encodings, locations, scores };
 }
-
-// --- Public API ---
 
 export async function encodeAllFacesFromVideo(
   source: HTMLVideoElement | HTMLCanvasElement
@@ -228,7 +117,7 @@ export async function encodeAllFacesFromVideo(
   quality?: QualityResult;
 }> {
   try {
-    const result = await detectFacesAndGetDescriptors(source);
+    const result = await detectWithFaceApi(source);
     if (!result.success) {
       return { success: false, message: result.message };
     }
@@ -271,7 +160,7 @@ export async function encodeAllFaces(
       URL.revokeObjectURL(img.src);
       return { success: false, message: "Invalid image" };
     }
-    const result = await detectFacesAndGetDescriptors(img);
+    const result = await detectWithFaceApi(img);
     URL.revokeObjectURL(img.src);
     if (!result.success) {
       return { success: false, message: result.message };
@@ -324,14 +213,10 @@ export async function detectFace(
     const img = new Image();
     img.src = URL.createObjectURL(imageBlob);
     await ensureLoaded(img);
-    const result = await detectFacesAndGetDescriptors(img);
+    const result = await detectWithFaceApi(img);
     URL.revokeObjectURL(img.src);
     if (result.success && result.locations) {
-      return {
-        count: result.locations.length,
-        locations: result.locations,
-        detection_scores: result.scores,
-      };
+      return { count: result.locations.length, locations: result.locations, detection_scores: result.scores };
     }
     return { count: 0 };
   } catch {
@@ -344,7 +229,7 @@ export async function checkQuality(imageBlob: Blob): Promise<QualityResult> {
     const img = new Image();
     img.src = URL.createObjectURL(imageBlob);
     await ensureLoaded(img);
-    const result = await detectFacesAndGetDescriptors(img);
+    const result = await detectWithFaceApi(img);
     URL.revokeObjectURL(img.src);
     const scores = result.scores || [];
     const maxScore = scores.length ? Math.max(...scores) : 0;
