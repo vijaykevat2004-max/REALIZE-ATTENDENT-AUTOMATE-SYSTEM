@@ -1,6 +1,6 @@
 "use client";
 
-const AI_URL = "https://hrms-ai-abv8.onrender.com";
+const AI_URL = "/api/ai";
 
 async function callAi<T>(
   endpoint: string,
