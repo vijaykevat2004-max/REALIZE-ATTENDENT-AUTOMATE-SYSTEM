@@ -1,82 +1,42 @@
 "use client";
 
-const AI_URL = "/api/ai";
+const API = "/api/ai";
 
-async function callAi<T>(
-  endpoint: string,
-  body: FormData | object
-): Promise<{ ok: boolean; data?: T; error?: string }> {
-  const isForm = body instanceof FormData;
-  const isGet = endpoint === "/health";
-  try {
-    const res = await fetch(`${AI_URL}${endpoint}`, {
-      method: isGet ? "GET" : "POST",
-      ...(isForm ? { body } : isGet ? {} : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
-      signal: AbortSignal.timeout(20000),
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      return { ok: false, error: `AI ${res.status}: ${text.slice(0, 200)}` };
-    }
-    const data = await res.json();
-    return { ok: true, data };
-  } catch (e: any) {
-    const msg = e.name === "TimeoutError" ? "AI service timeout (cold start taking too long)" : e.message || "AI service unreachable";
-    console.error(`[aiService] ${endpoint} failed:`, msg);
-    return { ok: false, error: msg };
-  }
-}
-
-export interface AiEncodeResult {
-  success: boolean;
-  encodings?: number[][];
-  locations?: number[][];
-  message?: string;
-  quality?: {
-    blurry: boolean;
-    blur_score: number;
-    dark: boolean;
-    brightness: number;
-    good_quality: boolean;
-    face_count?: number;
-  };
-}
-
-export async function aiEncodeFace(imageBlob: Blob): Promise<AiEncodeResult> {
-  const fd = new FormData();
-  fd.append("image", imageBlob, "frame.jpg");
-  const result = await callAi<any>("/encode-face", fd);
-  if (!result.ok) return { success: false, message: result.error };
-  const d = result.data!;
-  if (!d.success) return { success: false, message: d.message || "No face", quality: d.quality };
-  return {
-    success: true,
-    encodings: d.encodings,
-    locations: d.locations,
-    message: `${d.faces} face(s) detected`,
-    quality: d.quality,
-  };
-}
-
-export async function aiCheckQuality(imageBlob: Blob): Promise<{
-  blurry: boolean; blur_score: number; dark: boolean; brightness: number;
-  good_quality: boolean; face_count: number;
+export async function aiEncode(blob: Blob): Promise<{
+  success: boolean; encodings?: number[][]; message?: string; confidence?: number;
+  quality?: { blurry: boolean; blur_score: number; good_quality: boolean };
+  embedding_dim?: number;
 }> {
   const fd = new FormData();
-  fd.append("image", imageBlob, "frame.jpg");
-  const result = await callAi<any>("/quality-check", fd);
-  if (!result.ok || !result.data) {
-    return { blurry: false, blur_score: 0, dark: false, brightness: 128, good_quality: false, face_count: 0 };
+  fd.append("image", blob, "face.jpg");
+  try {
+    const res = await fetch(`${API}/encode-face`, { method: "POST", body: fd, signal: AbortSignal.timeout(25000) });
+    const data = await res.json();
+    if (!res.ok || !data.success) return { success: false, message: data.message || `Server ${res.status}` };
+    return {
+      success: true, encodings: data.encodings, message: `Face detected (${data.confidence}% conf)`,
+      confidence: data.confidence, quality: data.quality, embedding_dim: data.embedding_dim,
+    };
+  } catch (e: any) {
+    return { success: false, message: e.name === "TimeoutError" ? "AI service timeout" : e.message };
   }
-  return result.data;
 }
 
-export async function aiWarmUp(): Promise<boolean> {
+export async function aiDetect(blob: Blob): Promise<{ count: number; locations?: number[][] }> {
+  const fd = new FormData();
+  fd.append("image", blob, "face.jpg");
   try {
-    const res = await fetch(`${AI_URL}/health`, { signal: AbortSignal.timeout(15000) });
-    return res.ok;
-  } catch (e) {
-    console.warn("[aiService] warm-up failed:", e);
-    return false;
-  }
+    const res = await fetch(`${API}/detect`, { method: "POST", body: fd, signal: AbortSignal.timeout(15000) });
+    if (!res.ok) return { count: 0 };
+    return await res.json();
+  } catch { return { count: 0 }; }
 }
+
+export async function aiHealth(): Promise<boolean> {
+  try {
+    const res = await fetch(`${API}/health`, { signal: AbortSignal.timeout(5000) });
+    return res.ok;
+  } catch { return false; }
+}
+
+export const aiWarmUp = aiHealth;
