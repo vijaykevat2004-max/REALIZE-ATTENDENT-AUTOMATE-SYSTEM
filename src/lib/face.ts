@@ -14,6 +14,13 @@ export function getLoadingStatus(): string {
 async function getFaceApi(): Promise<FaceApiModule> {
   if (!faceapi) {
     faceapi = await import("@vladmandic/face-api");
+    try {
+      await (faceapi.tf as any).setBackend("cpu");
+      await (faceapi.tf as any).ready();
+      console.log("TF.js backend: cpu (forced)");
+    } catch (e) {
+      console.warn("TF.js CPU backend failed:", e);
+    }
   }
   return faceapi;
 }
@@ -23,6 +30,12 @@ async function ensureModels(): Promise<void> {
   if (loadPromise) return loadPromise;
   loadPromise = (async () => {
     const api = await getFaceApi();
+    try {
+      await (api.tf as any).ready();
+      console.log("TF.js backend:", (api.tf as any).getBackend());
+    } catch (e) {
+      console.warn("TF.js ready:", e);
+    }
     const base = window.location.origin + "/models";
     loadingStatus = "Loading face detection (1/3)...";
     await api.nets.tinyFaceDetector.loadFromUri(base);
