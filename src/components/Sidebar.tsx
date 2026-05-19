@@ -7,6 +7,7 @@ const navItems = [
   { href: "/", label: "Dashboard", icon: "📊" },
   { href: "/employees", label: "Employees", icon: "👥" },
   { href: "/kiosk", label: "Face Kiosk", icon: "📷" },
+  { href: "/live", label: "Live", icon: "🔴" },
   { href: "/attendance", label: "Attendance", icon: "📍" },
   { href: "/leaves", label: "Leaves", icon: "📅" },
   { href: "/salary", label: "Salary", icon: "💰" },

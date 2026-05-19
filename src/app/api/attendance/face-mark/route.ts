@@ -1,13 +1,24 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getEmployeeShiftTimes, minutesToHM } from "@/lib/attendanceUtils";
+import { getEmployeeShiftTimes } from "@/lib/attendanceUtils";
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const date = searchParams.get("date") || new Date().toISOString().split("T")[0];
   const employeeId = searchParams.get("employeeId") || "";
+  const mode = searchParams.get("mode") || "all";
   const where: any = { date };
   if (employeeId) where.employeeId = employeeId;
+
+  if (mode === "active") {
+    const active = await prisma.attendanceLog.findMany({
+      where: { date, outTime: null, status: { not: "ABSENT" } },
+      include: { employee: { select: { id: true, firstName: true, lastName: true, employeeCode: true, department: true, photoUrl: true } } },
+      orderBy: { inTime: "asc" },
+    });
+    return NextResponse.json(active);
+  }
+
   const logs = await prisma.faceDetectionLog.findMany({
     where,
     include: { employee: { select: { id: true, firstName: true, lastName: true, employeeCode: true, department: true, photoUrl: true } } },
@@ -18,7 +29,7 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   try {
-    const { employeeId } = await req.json();
+    const { employeeId, photoUrl } = await req.json();
     if (!employeeId) return NextResponse.json({ error: "employeeId required" }, { status: 400 });
 
     const now = new Date();
@@ -47,10 +58,12 @@ export async function POST(req: NextRequest) {
 
     if (type === "CHECK_IN") {
       const lateMin = Math.max(0, totalMinutes - startMinutes - lateThreshold);
+      const attData: any = { inTime: timeStr, status: lateMin > 0 ? "LATE" : "PRESENT", lateMinutes: lateMin, source: "FACE" };
+      if (photoUrl) attData.photoUrl = photoUrl;
       await prisma.attendanceLog.upsert({
         where: { employeeId_date: { employeeId, date } },
-        create: { employeeId, date, inTime: timeStr, status: lateMin > 0 ? "LATE" : "PRESENT", lateMinutes: lateMin, source: "FACE" },
-        update: { inTime: timeStr, status: lateMin > 0 ? "LATE" : "PRESENT", lateMinutes: lateMin, source: "FACE" },
+        create: { employeeId, date, ...attData },
+        update: attData,
       });
     } else {
       const earlyMin = Math.max(0, endMinutes - earlyExitThreshold - totalMinutes);
@@ -58,10 +71,9 @@ export async function POST(req: NextRequest) {
         where: { employeeId_date: { employeeId, date } },
       });
       if (existing) {
-        await prisma.attendanceLog.update({
-          where: { id: existing.id },
-          data: { outTime: timeStr, earlyExitMinutes: earlyMin, source: "FACE" },
-        });
+        const upd: any = { outTime: timeStr, earlyExitMinutes: earlyMin, source: "FACE" };
+        if (photoUrl) upd.photoUrl = photoUrl;
+        await prisma.attendanceLog.update({ where: { id: existing.id }, data: upd });
       }
     }
 
@@ -70,10 +82,7 @@ export async function POST(req: NextRequest) {
     });
 
     return NextResponse.json({
-      success: true,
-      type,
-      time: timeStr,
-      employeeId,
+      success: true, type, time: timeStr, employeeId,
       employeeName: `${employee.firstName} ${employee.lastName}`,
       attendance: updatedLog,
       detectionsToday: allToday.length + 1,

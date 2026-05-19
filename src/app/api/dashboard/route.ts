@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import dayjs from "dayjs";
+export const dynamic = "force-dynamic";
 export async function GET() {
   const today = dayjs().format("YYYY-MM-DD");
   const thisMonth = dayjs().month() + 1;
