@@ -19,28 +19,30 @@ async function proxy(request: NextRequest, path: string[], method: string) {
   const url = `${AI_BASE}/${pathStr}`;
 
   try {
-    const headers: Record<string, string> = {};
-    // Forward content-type for non-formdata requests
-    const ct = request.headers.get("content-type");
-    if (ct && !ct.includes("multipart/form-data")) {
-      headers["content-type"] = ct;
-    }
+    const ct = request.headers.get("content-type") || "";
+    const isForm = ct.includes("multipart/form-data");
+
+    const headers: Record<string, string> = { "content-type": ct };
 
     let body: BodyInit | null = null;
     if (method !== "GET" && method !== "OPTIONS") {
-      if (ct && ct.includes("multipart/form-data")) {
+      if (isForm) {
         body = request.body;
       } else {
-        body = JSON.stringify(await request.json().catch(() => ({})));
+        body = await request.text();
       }
     }
 
-    const aiRes = await fetch(url, {
+    const fetchOpts: RequestInit & { duplex?: string } = {
       method,
       headers: { ...headers, accept: "application/json" },
-      body,
       signal: AbortSignal.timeout(25000),
-    });
+    };
+    if (body) {
+      fetchOpts.body = body;
+      fetchOpts.duplex = "half";
+    }
+    const aiRes = await fetch(url, fetchOpts);
 
     const aiBody = await aiRes.text();
     return new NextResponse(aiBody, {
