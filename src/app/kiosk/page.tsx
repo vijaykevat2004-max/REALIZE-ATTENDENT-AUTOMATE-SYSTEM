@@ -380,6 +380,7 @@ function KioskContent() {
 
         <div style={{ display: "flex", gap: 12, fontSize: 12, marginBottom: 8, color: "var(--text-muted)", flexWrap: "wrap" }}>
           <span>📦 Models: {modelReady ? "✅ ready" : modelLoading || "loading..."}</span>
+          <span>🔍 Detect: {typeof (window as any).FaceDetector !== "undefined" ? "🍎 Native" : "🐍 TinyFace"}</span>
           <span>👥 Known: {known.length} employees</span>
           <span>📸 Captures: {capturingCount.current}</span>
           <span>🔬 Last: {debugInfo.lastResult || "—"}</span>
