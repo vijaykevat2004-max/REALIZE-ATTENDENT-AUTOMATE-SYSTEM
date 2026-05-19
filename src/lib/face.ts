@@ -19,8 +19,7 @@ let warmedUp = false;
 async function ensureAi(): Promise<void> {
   if (warmedUp) return;
   warmedUp = true;
-  // Don't wait for warm-up, let first request trigger it naturally
-  aiWarmUp().catch(() => {});
+  await aiWarmUp();
 }
 
 export function getLoadingStatus(): string {

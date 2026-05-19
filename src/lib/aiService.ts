@@ -7,21 +7,23 @@ async function callAi<T>(
   body: FormData | object
 ): Promise<{ ok: boolean; data?: T; error?: string }> {
   const isForm = body instanceof FormData;
+  const isGet = endpoint === "/health";
   try {
     const res = await fetch(`${AI_URL}${endpoint}`, {
-      method: "POST",
-      ...(isForm ? { body } : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
-      signal: AbortSignal.timeout(15000),
+      method: isGet ? "GET" : "POST",
+      ...(isForm ? { body } : isGet ? {} : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+      signal: AbortSignal.timeout(20000),
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
-      return { ok: false, error: `AI ${res.status}: ${text}` };
+      return { ok: false, error: `AI ${res.status}: ${text.slice(0, 200)}` };
     }
     const data = await res.json();
     return { ok: true, data };
   } catch (e: any) {
-    if (e.name === "TimeoutError") return { ok: false, error: "AI service timeout (cold start)" };
-    return { ok: false, error: e.message || "AI service unreachable" };
+    const msg = e.name === "TimeoutError" ? "AI service timeout (cold start taking too long)" : e.message || "AI service unreachable";
+    console.error(`[aiService] ${endpoint} failed:`, msg);
+    return { ok: false, error: msg };
   }
 }
 
@@ -71,9 +73,10 @@ export async function aiCheckQuality(imageBlob: Blob): Promise<{
 
 export async function aiWarmUp(): Promise<boolean> {
   try {
-    const res = await fetch(`${AI_URL}/health`, { signal: AbortSignal.timeout(10000) });
+    const res = await fetch(`${AI_URL}/health`, { signal: AbortSignal.timeout(15000) });
     return res.ok;
-  } catch {
+  } catch (e) {
+    console.warn("[aiService] warm-up failed:", e);
     return false;
   }
 }
