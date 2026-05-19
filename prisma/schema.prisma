@@ -41,11 +41,12 @@ model Employee {
   createdAt        DateTime      @default(now())
   updatedAt        DateTime      @updatedAt
 
-  salaryConfig    SalaryConfig?
-  attendanceLogs  AttendanceLog[]
-  leaveBalances   LeaveBalance[]
-  leaveRequests   LeaveRequest[]
-  payrollRecords  PayrollRecord[]
+  salaryConfig      SalaryConfig?
+  attendanceLogs    AttendanceLog[]
+  faceDetectionLogs FaceDetectionLog[]
+  leaveBalances     LeaveBalance[]
+  leaveRequests     LeaveRequest[]
+  payrollRecords    PayrollRecord[]
 }
 
 model SalaryConfig {
@@ -149,6 +150,19 @@ model AttendanceLog {
   notes            String?
 
   @@unique([employeeId, date])
+}
+
+model FaceDetectionLog {
+  id         String   @id @default(cuid())
+  employeeId String
+  employee   Employee @relation(fields: [employeeId], references: [id])
+  date       String
+  time       String
+  type       String   @default("CHECK_IN")
+  createdAt  DateTime @default(now())
+
+  @@index([employeeId, date])
+  @@index([date])
 }
 
 model PayrollRecord {

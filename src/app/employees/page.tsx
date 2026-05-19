@@ -54,6 +54,7 @@ function EmployeesContent() {
             <table>
               <thead>
                 <tr>
+                  <th>Photo</th>
                   <th>Code</th>
                   <th>Name</th>
                   <th>Department</th>
@@ -66,6 +67,15 @@ function EmployeesContent() {
               <tbody>
                 {filtered.map((e) => (
                   <tr key={e.id}>
+                    <td>
+                      {e.photoUrl ? (
+                        <img src={e.photoUrl} alt="" style={{ width: 36, height: 36, borderRadius: "50%", objectFit: "cover" }} />
+                      ) : e.faceEmbedding ? (
+                        <span style={{ fontSize: 20 }}>🧑</span>
+                      ) : (
+                        <span style={{ fontSize: 20 }}>👤</span>
+                      )}
+                    </td>
                     <td>{e.employeeCode}</td>
                     <td>{e.firstName} {e.lastName}</td>
                     <td>{e.department}</td>
@@ -78,7 +88,7 @@ function EmployeesContent() {
                   </tr>
                 ))}
                 {filtered.length === 0 && (
-                  <tr><td colSpan={7} style={{ textAlign: "center", color: "var(--text-muted)", padding: 40 }}>No employees found</td></tr>
+                  <tr><td colSpan={8} style={{ textAlign: "center", color: "var(--text-muted)", padding: 40 }}>No employees found</td></tr>
                 )}
               </tbody>
             </table>

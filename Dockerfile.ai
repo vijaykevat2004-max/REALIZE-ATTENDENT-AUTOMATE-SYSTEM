@@ -5,6 +5,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgl1-mesa-glx
 WORKDIR /app
 COPY services/ai/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+RUN python -c "import insightface; from insightface.app import FaceAnalysis; FaceAnalysis(name='buffalo_s', providers=['CPUExecutionProvider']).prepare(ctx_id=0, det_size=(320, 320))"
+
 COPY services/ai/main.py .
 
 EXPOSE 8001

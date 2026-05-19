@@ -156,7 +156,6 @@ function FaceEnroll({ employeeId, token }: { employeeId: string; token: string |
     try {
       const s = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240, facingMode: "user" } });
       setStream(s);
-      if (videoRef.current) videoRef.current.srcObject = s;
       setActive(true);
     } catch { setMessage("Camera access denied"); }
   };
@@ -188,9 +187,14 @@ function FaceEnroll({ employeeId, token }: { employeeId: string; token: string |
     setMessage("");
     try {
       const blob = await (await fetch(capturedImg)).blob();
-      const aiUrl = process.env.NEXT_PUBLIC_AI_SERVICE_URL || "https://hrms-ai-service.onrender.com";
+      const aiUrl = process.env.NEXT_PUBLIC_AI_SERVICE_URL || "https://hrms-ai-abv8.onrender.com";
       const form = new FormData();
       form.append("image", blob, "face.jpg");
+      await fetch(`/api/employees/${employeeId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ photoUrl: capturedImg }),
+      });
       const encRes = await fetch(`${aiUrl}/encode-face`, { method: "POST", body: form });
       if (!encRes.ok) { setMessage("AI service unavailable. Deploy the AI service first."); setSaving(false); return; }
       const encData = await encRes.json();
@@ -219,7 +223,10 @@ function FaceEnroll({ employeeId, token }: { employeeId: string; token: string |
     setMessage("Face removed");
   };
 
-  useEffect(() => { return () => { if (stream) stream.getTracks().forEach((t) => t.stop()); }; }, [stream]);
+  useEffect(() => {
+    if (videoRef.current && stream) videoRef.current.srcObject = stream;
+    return () => { if (stream) stream.getTracks().forEach((t) => t.stop()); };
+  }, [stream]);
 
   return (
     <div>
