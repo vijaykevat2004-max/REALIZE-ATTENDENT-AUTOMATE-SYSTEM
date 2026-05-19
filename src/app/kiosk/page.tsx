@@ -95,8 +95,15 @@ function KioskContent() {
     ctx.drawImage(video, 0, 0);
     const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
     setCapturedPreview(dataUrl);
+    // Pixel diagnostic
+    let pixelInfo = "";
+    try {
+      const pixel = ctx.getImageData(Math.round(canvas.width/2), Math.round(canvas.height/2), 1, 1).data;
+      pixelInfo = `px(${pixel[0]},${pixel[1]},${pixel[2]})`;
+    } catch (e) { pixelInfo = "px:ERROR"; }
+    addDet({ time: new Date().toLocaleTimeString(), type: "check", message: `Test: canvas ${canvas.width}x${canvas.height} ${pixelInfo}...` });
+    console.log(`🔍 TEST canvas ${canvas.width}x${canvas.height} pixel@center: ${pixelInfo}`);
     const t0 = performance.now();
-    addDet({ time: new Date().toLocaleTimeString(), type: "check", message: `Test: canvas ${canvas.width}x${canvas.height}...` });
     const encData = await encodeAllFacesFromVideo(canvas);
     const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
     const dim = encData.encodings?.[0]?.length || 0;
