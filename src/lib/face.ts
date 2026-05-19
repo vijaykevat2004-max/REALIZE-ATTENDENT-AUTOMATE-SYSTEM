@@ -97,7 +97,7 @@ export function computeDistance(a: FaceEncoding, b: FaceEncoding): number {
 export function matchLocal(
   known: FaceEncoding[],
   target: FaceEncoding,
-  threshold = 0.35
+  threshold = 0.7
 ): { matched: boolean; matchedIndex: number; similarity: number } {
   let bestIdx = -1;
   let bestDist = Infinity;

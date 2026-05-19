@@ -13,20 +13,24 @@ interface FaceLog {
   employee?: { firstName: string; lastName: string; employeeCode: string; department: string; photoUrl: string | null };
 }
 
-interface MatchEvent {
-  id: string;
-  name: string;
-  code: string;
-  type: string;
+interface DetectionInfo {
   time: string;
-  similarity: number;
+  type: "check" | "match" | "mark" | "fail" | "info";
+  empName?: string;
+  empCode?: string;
+  empDept?: string;
+  distance?: number;
+  confidence?: number;
+  faceCount?: number;
+  matchedIndex?: number;
+  knownCount?: number;
+  message: string;
 }
 
 const AI_URL = "https://hrms-ai-abv8.onrender.com";
-const MATCH_THRESHOLD = 0.35;
-const EMBED_UPDATE_THRESHOLD = 0.25;
+const MATCH_THRESHOLD = 0.7;
 const MARK_COOLDOWN = 30000;
-const CAPTURE_INTERVAL = 2500;
+const CAPTURE_INTERVAL = 3000;
 const MOTION_THRESHOLD = 8;
 const MOTION_FRAME_W = 80;
 const MOTION_FRAME_H = 60;
@@ -41,9 +45,7 @@ function speak(text: string) {
   if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
   window.speechSynthesis.cancel();
   const u = new SpeechSynthesisUtterance(text);
-  u.lang = "en-US";
-  u.rate = 0.9;
-  u.pitch = 1.1;
+  u.lang = "en-US"; u.rate = 0.9; u.pitch = 1.1;
   window.speechSynthesis.speak(u);
 }
 
@@ -55,15 +57,19 @@ function KioskContent() {
   const motionCanvasRef = useRef<HTMLCanvasElement>(null);
   const [active, setActive] = useState(false);
   const [known, setKnown] = useState<KioskEmployee[]>([]);
-  const [events, setEvents] = useState<MatchEvent[]>([]);
+  const [detections, setDetections] = useState<DetectionInfo[]>([]);
   const [sheet, setSheet] = useState<FaceLog[]>([]);
-  const [flash, setFlash] = useState<string | null>(null);
   const [announceEnabled, setAnnounceEnabled] = useState(true);
   const lastMarkedRef = useRef<Record<string, number>>({});
   const prevFrameRef = useRef<ImageData | null>(null);
   const lastCaptureRef = useRef(0);
   const animFrameRef = useRef<number>(0);
   const [stats, setStats] = useState({ total: 0, enrolled: 0, todayIn: 0, todayOut: 0, activeNow: 0 });
+  const [camStatus, setCamStatus] = useState("initializing");
+
+  const addDet = (d: DetectionInfo) => {
+    setDetections((prev) => [d, ...prev].slice(0, 100));
+  };
 
   useEffect(() => {
     if (!authLoading && !token) router.push("/login");
@@ -102,9 +108,33 @@ function KioskContent() {
         }));
         setKnown(withFace);
         setStats((s) => ({ ...s, total: arr.length, enrolled: withFace.length }));
-      });
+        addDet({ time: new Date().toLocaleTimeString(), type: "info", message: `Loaded ${withFace.length}/${arr.length} employees with faces` });
+      })
+      .catch(() => addDet({ time: new Date().toLocaleTimeString(), type: "info", message: "Failed to load employees" }));
     fetchSheet();
   }, [token, fetchSheet]);
+
+  const autoStart = useCallback(async () => {
+    try {
+      setCamStatus("requesting camera...");
+      const s = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: "user" } });
+      if (videoRef.current) videoRef.current.srcObject = s;
+      setCamStatus("camera ready");
+      prevFrameRef.current = null;
+      setActive(true);
+      setDetections([]);
+      addDet({ time: new Date().toLocaleTimeString(), type: "info", message: "Kiosk started automatically" });
+    } catch (e: any) {
+      setCamStatus("camera blocked");
+      addDet({ time: new Date().toLocaleTimeString(), type: "info", message: "Camera access denied. Click Start Kiosk manually." });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (token && !authLoading && known.length > 0 && !active) {
+      autoStart();
+    }
+  }, [token, authLoading, known.length, active, autoStart]);
 
   const detectMotion = (): boolean => {
     const video = videoRef.current;
@@ -119,10 +149,9 @@ function KioskContent() {
     const prev = prevFrameRef.current.data;
     const curr = current.data;
     let diff = 0;
-    const len = prev.length;
-    for (let i = 0; i < len; i += 4) diff += Math.abs(prev[i] - curr[i]);
+    for (let i = 0; i < prev.length; i += 4) diff += Math.abs(prev[i] - curr[i]);
     prevFrameRef.current = current;
-    return diff / (len / 4) > MOTION_THRESHOLD;
+    return diff / (prev.length / 4) > MOTION_THRESHOLD;
   };
 
   const captureAndRecognize = async () => {
@@ -138,13 +167,22 @@ function KioskContent() {
     const blob = await (await fetch(frameDataUrl)).blob();
     const form = new FormData();
     form.append("image", blob, "frame.jpg");
+    const checkTime = new Date().toLocaleTimeString();
+    addDet({ time: checkTime, type: "check", message: "Sending to AI..." });
     try {
       const encRes = await fetch(`${AI_URL}/encode-face?min_det_score=0.4`, { method: "POST", body: form });
-      if (!encRes.ok) return;
+      if (!encRes.ok) {
+        addDet({ time: checkTime, type: "fail", message: `AI returned ${encRes.status}` });
+        return;
+      }
       const encData = await encRes.json();
-      if (!encData.success || !encData.encodings?.length) return;
+      const faceCount = encData.faces || 0;
+      addDet({ time: checkTime, type: "check", faceCount, message: `AI found ${faceCount} face(s)` });
+      if (!encData.success || !encData.encodings?.length) {
+        addDet({ time: checkTime, type: "fail", faceCount: 0, message: encData.message || "No face detected" });
+        return;
+      }
       const now = Date.now();
-      const newEvents: MatchEvent[] = [];
       for (let fi = 0; fi < encData.encodings.length; fi++) {
         const target = encData.encodings[fi];
         let bestIdx = -1, bestDist = Infinity;
@@ -152,14 +190,24 @@ function KioskContent() {
           const d = computeDistance(known[i].encoding, target);
           if (d < bestDist) { bestDist = d; bestIdx = i; }
         }
-        if (bestIdx === -1 || bestDist > MATCH_THRESHOLD) continue;
+        if (bestIdx === -1) {
+          addDet({ time: checkTime, type: "fail", message: "No enrolled faces to match against" });
+          continue;
+        }
         const emp = known[bestIdx];
+        const dist = Math.round(bestDist * 1000) / 1000;
+        const conf = Math.round((1 / (1 + bestDist)) * 100);
+        if (bestDist > MATCH_THRESHOLD) {
+          addDet({ time: checkTime, type: "fail", faceCount, empName: `${emp.firstName} ${emp.lastName}`, empCode: emp.employeeCode, empDept: emp.department, distance: dist, confidence: conf, knownCount: known.length, message: `Best match: ${emp.firstName} ${emp.lastName} — distance ${dist} exceeds threshold ${MATCH_THRESHOLD}` });
+          continue;
+        }
         const last = lastMarkedRef.current[emp.id] || 0;
         if (now - last < MARK_COOLDOWN) {
-          newEvents.push({ id: emp.id, name: `${emp.firstName} ${emp.lastName}`, code: emp.employeeCode, type: "COOLDOWN", time: "", similarity: 1 / (1 + bestDist) });
+          addDet({ time: checkTime, type: "info", faceCount, empName: `${emp.firstName} ${emp.lastName}`, empCode: emp.employeeCode, empDept: emp.department, distance: dist, confidence: conf, matchedIndex: bestIdx, knownCount: known.length, message: `⏳ ${emp.firstName} ${emp.lastName} — recently marked (${Math.ceil((MARK_COOLDOWN - (now - last)) / 1000)}s cooldown)` });
           continue;
         }
         lastMarkedRef.current[emp.id] = now;
+        addDet({ time: checkTime, type: "match", faceCount, empName: `${emp.firstName} ${emp.lastName}`, empCode: emp.employeeCode, empDept: emp.department, distance: dist, confidence: conf, matchedIndex: bestIdx, knownCount: known.length, message: `✅ Matched: ${emp.firstName} ${emp.lastName} (dist: ${dist}, conf: ${conf}%) — marking ${fi === 0 ? "primary" : "secondary"} face...` });
         const markRes = await fetch("/api/attendance/face-mark", {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -167,30 +215,19 @@ function KioskContent() {
         });
         if (markRes.ok) {
           const result = await markRes.json();
-          newEvents.push({ id: emp.id, name: result.employeeName, code: emp.employeeCode, type: result.type, time: result.time, similarity: 1 / (1 + bestDist) });
-          if (announceEnabled && result.type !== "COOLDOWN") {
-            const greeting = result.type === "CHECK_IN" ? "Good morning" : "Goodbye";
-            speak(`${greeting}, ${emp.firstName}`);
+          addDet({ time: checkTime, type: "mark", empName: result.employeeName, empCode: emp.employeeCode, empDept: emp.department, distance: dist, confidence: conf, message: `✅ ${result.employeeName} ${result.type === "CHECK_IN" ? "CHECKED IN" : "CHECKED OUT"} at ${result.time}` });
+          if (announceEnabled) {
+            speak(`${result.type === "CHECK_IN" ? "Good morning" : "Goodbye"}, ${emp.firstName}`);
           }
-          if (bestDist < EMBED_UPDATE_THRESHOLD) {
-            fetch(`/api/employees/face/${emp.id}`, {
-              method: "PUT",
-              headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-              body: JSON.stringify({ faceEmbedding: JSON.stringify(target) }),
-            }).catch(() => {});
-          }
-        }
-      }
-      if (newEvents.length > 0) {
-        setEvents((prev) => [...newEvents.reverse(), ...prev].slice(0, 50));
-        const lastEvent = newEvents[newEvents.length - 1];
-        if (lastEvent.type !== "COOLDOWN") {
-          setFlash(lastEvent.type === "CHECK_IN" ? "success" : "accent");
-          setTimeout(() => setFlash(null), 300);
           fetchSheet();
+        } else {
+          const errData = await markRes.json().catch(() => ({}));
+          addDet({ time: checkTime, type: "fail", empName: `${emp.firstName} ${emp.lastName}`, message: `❌ Mark failed: ${errData.error || markRes.status}` });
         }
       }
-    } catch {}
+    } catch (e: any) {
+      addDet({ time: checkTime, type: "fail", message: `Error: ${e.message || "unknown"}` });
+    }
   };
 
   useEffect(() => {
@@ -200,7 +237,8 @@ function KioskContent() {
       if (!running) return;
       animFrameRef.current = requestAnimationFrame(loop);
       try {
-        if (detectMotion() && Date.now() - lastCaptureRef.current >= CAPTURE_INTERVAL) {
+        const motion = detectMotion();
+        if (motion && Date.now() - lastCaptureRef.current >= CAPTURE_INTERVAL) {
           lastCaptureRef.current = Date.now();
           captureAndRecognize();
         }
@@ -220,9 +258,11 @@ function KioskContent() {
     try {
       const s = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: "user" } });
       if (videoRef.current) videoRef.current.srcObject = s;
+      setCamStatus("camera ready");
       prevFrameRef.current = null;
       setActive(true);
-      setEvents([]);
+      setDetections([]);
+      addDet({ time: new Date().toLocaleTimeString(), type: "info", message: "Kiosk started" });
     } catch { alert("Camera access denied"); }
   };
 
@@ -235,6 +275,7 @@ function KioskContent() {
     }
     prevFrameRef.current = null;
     setActive(false);
+    setCamStatus("stopped");
   };
 
   if (authLoading) return <div className="loading-wrap"><div className="spinner" /></div>;
@@ -244,11 +285,12 @@ function KioskContent() {
     <div className="app-layout">
       <Sidebar />
       <main className="main-content">
-        <div className={`page-header ${flash ? `flash-${flash}` : ""}`}>
+        <div className="page-header">
           <h1>Face Recognition Kiosk</h1>
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
             <span className="badge badge-success">👤 {stats.activeNow} in office</span>
             <span className="badge badge-muted">{stats.enrolled}/{stats.total} enrolled</span>
+            <span className="badge badge-muted" style={{ fontSize: 11 }}>{camStatus}</span>
             <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
               <input type="checkbox" checked={announceEnabled} onChange={(e) => setAnnounceEnabled(e.target.checked)} />
               Voice
@@ -275,13 +317,25 @@ function KioskContent() {
                 <video ref={videoRef} autoPlay playsInline muted style={{ width: "100%", borderRadius: 8 }} />
                 <canvas ref={canvasRef} style={{ display: "none" }} />
                 <canvas ref={motionCanvasRef} style={{ display: "none" }} />
-                {!flash && (
+                {detections.length > 0 && detections[0].type === "check" && (
+                  <div style={{ position: "absolute", top: 8, right: 8, background: "rgba(0,0,0,0.6)", color: "#94a3b8", padding: "4px 8px", borderRadius: 4, fontSize: 11 }}>
+                    Scanning...
+                  </div>
+                )}
+                {detections.length > 0 && (detections[0].type === "match" || detections[0].type === "mark") && (
                   <div style={{
-                    position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
-                    color: "rgba(255,255,255,0.15)", fontSize: 14, textAlign: "center",
+                    position: "absolute", bottom: 0, left: 0, right: 0,
+                    background: "linear-gradient(transparent, rgba(0,0,0,0.85))",
+                    padding: 16, borderRadius: "0 0 8px 8px",
                   }}>
-                    <div style={{ fontSize: 32, marginBottom: 4 }}>👁️</div>
-                    Motion-activated capture
+                    <div style={{ fontWeight: 600, fontSize: 18, color: detections[0].type === "mark" ? "var(--success)" : "var(--accent)" }}>
+                      {detections[0].empName}
+                    </div>
+                    <div style={{ fontSize: 12, color: "#94a3b8", display: "flex", gap: 8 }}>
+                      <span>{detections[0].empCode}</span>
+                      <span>{detections[0].empDept}</span>
+                      <span>{detections[0].confidence}%</span>
+                    </div>
                   </div>
                 )}
               </div>
@@ -289,48 +343,45 @@ function KioskContent() {
               <div className="map-placeholder">
                 <div style={{ fontSize: 48, marginBottom: 8 }}>📷</div>
                 <div>Camera off</div>
-                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>Start kiosk to begin</div>
               </div>
             )}
           </div>
 
-          <div className="card">
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <div className="card" style={{ display: "flex", flexDirection: "column", maxHeight: 500 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, flexShrink: 0 }}>
               <h3 style={{ fontSize: 15, margin: 0 }}>Today's Log</h3>
               <div style={{ display: "flex", gap: 8, fontSize: 12 }}>
                 <span className="badge badge-success">IN: {stats.todayIn}</span>
                 <span className="badge badge-accent">OUT: {stats.todayOut}</span>
               </div>
             </div>
-            <div style={{ maxHeight: 440, overflowY: "auto", fontSize: 13 }}>
+            <div style={{ flex: 1, overflowY: "auto", fontSize: 13 }}>
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
                 <thead>
-                  <tr style={{ borderBottom: "2px solid var(--border)" }}>
-                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Time</th>
-                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Employee</th>
-                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Type</th>
+                  <tr style={{ borderBottom: "2px solid var(--border)", position: "sticky", top: 0, background: "var(--card-bg)" }}>
+                    <th style={{ textAlign: "left", padding: "4px 8px" }}>Time</th>
+                    <th style={{ textAlign: "left", padding: "4px 8px" }}>Employee</th>
+                    <th style={{ textAlign: "left", padding: "4px 8px" }}>Type</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {sheet.map((log) => (
+                  {[...sheet].reverse().slice(0, 20).map((log) => (
                     <tr key={log.id} style={{ borderBottom: "1px solid var(--border)" }}>
-                      <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{log.time}</td>
-                      <td style={{ padding: "6px 8px" }}>
+                      <td style={{ padding: "4px 8px", whiteSpace: "nowrap" }}>{log.time}</td>
+                      <td style={{ padding: "4px 8px" }}>
                         {log.employee?.firstName} {log.employee?.lastName}
                         <span style={{ fontSize: 11, color: "var(--text-muted)", marginLeft: 6 }}>{log.employee?.employeeCode}</span>
                       </td>
-                      <td style={{ padding: "6px 8px" }}>
-                        {log.type === "CHECK_IN" ? (
-                          <span className="badge badge-success">IN</span>
-                        ) : (
-                          <span className="badge badge-accent">OUT</span>
-                        )}
+                      <td style={{ padding: "4px 8px" }}>
+                        <span className={`badge ${log.type === "CHECK_IN" ? "badge-success" : "badge-accent"}`}>
+                          {log.type === "CHECK_IN" ? "IN" : "OUT"}
+                        </span>
                       </td>
                     </tr>
                   ))}
                   {sheet.length === 0 && (
-                    <tr><td colSpan={3} style={{ textAlign: "center", padding: 40, color: "var(--text-muted)" }}>
-                      {active ? "Waiting for detection..." : "Start kiosk"}
+                    <tr><td colSpan={3} style={{ textAlign: "center", padding: 30, color: "var(--text-muted)" }}>
+                      {active ? "Waiting..." : "Start kiosk"}
                     </td></tr>
                   )}
                 </tbody>
@@ -340,62 +391,35 @@ function KioskContent() {
         </div>
 
         <div className="card">
-          <h3 style={{ marginBottom: 12, fontSize: 15 }}>
-            Live Recognition Feed
-          </h3>
-          <div style={{ maxHeight: 200, overflowY: "auto", fontSize: 13 }}>
-            {events.length === 0 ? (
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <h3 style={{ fontSize: 15, margin: 0 }}>Detection Log</h3>
+            <button className="btn btn-outline btn-sm" onClick={() => setDetections([])}>Clear</button>
+          </div>
+          <div style={{ maxHeight: 300, overflowY: "auto", fontSize: 12, fontFamily: "monospace" }}>
+            {detections.length === 0 ? (
               <div style={{ textAlign: "center", padding: 20, color: "var(--text-muted)" }}>
-                {active ? "Faces recognized here in real-time" : "Start kiosk"}
+                {active ? "Detection events appear here..." : "Start kiosk"}
               </div>
             ) : (
-              events.map((e, i) => (
-                <div key={`${e.id}-${i}`} style={{
-                  display: "flex", alignItems: "center", gap: 8,
-                  padding: "6px 8px", borderBottom: "1px solid var(--border)",
-                  animation: "fadeIn 0.3s",
+              detections.map((d, i) => (
+                <div key={i} style={{
+                  padding: "4px 8px", borderBottom: "1px solid var(--border)",
+                  color: d.type === "fail" ? "var(--danger)" : d.type === "match" || d.type === "mark" ? "var(--success)" : d.type === "info" ? "var(--text-muted)" : "inherit",
                 }}>
-                  <span style={{ fontWeight: 600, minWidth: 80 }}>{e.name}</span>
-                  <span style={{ color: "var(--text-muted)", fontSize: 12 }}>{e.code}</span>
-                  <span className={`badge ${e.type === "CHECK_IN" ? "badge-success" : e.type === "CHECK_OUT" ? "badge-accent" : e.type === "COOLDOWN" ? "badge-muted" : ""}`}>
-                    {e.type === "CHECK_IN" ? "✅ IN" : e.type === "CHECK_OUT" ? "🚪 OUT" : e.type === "COOLDOWN" ? "⏳ Recent" : e.type}
-                  </span>
-                  {e.time && <span style={{ color: "var(--text-muted)", fontSize: 11 }}>{e.time}</span>}
-                  <span style={{ color: "var(--text-muted)", fontSize: 11 }}>{(e.similarity * 100).toFixed(0)}%</span>
+                  <span style={{ color: "var(--text-muted)", marginRight: 8 }}>{d.time}</span>
+                  {d.faceCount !== undefined && <span style={{ color: "var(--text-muted)", marginRight: 8 }}>👤{d.faceCount}</span>}
+                  {d.confidence !== undefined && <span style={{ marginRight: 8 }}>{d.confidence}%</span>}
+                  {d.distance !== undefined && <span style={{ marginRight: 8, color: "var(--text-muted)" }}>d:{d.distance}</span>}
+                  {d.empName && <span style={{ fontWeight: 600, marginRight: 8 }}>{d.empName}</span>}
+                  {d.empCode && <span style={{ color: "var(--text-muted)", marginRight: 8 }}>{d.empCode}</span>}
+                  {d.empDept && <span style={{ color: "var(--text-muted)", marginRight: 8 }}>{d.empDept}</span>}
+                  {d.knownCount !== undefined && <span style={{ color: "var(--text-muted)", marginRight: 8 }}>known:{d.knownCount}</span>}
+                  <span>{d.message}</span>
                 </div>
               ))
             )}
           </div>
         </div>
-
-        <div className="card" style={{ marginTop: 16 }}>
-          <h3 style={{ marginBottom: 12, fontSize: 15 }}>Enrolled Employees ({stats.enrolled}/{stats.total})</h3>
-          <div className="table-wrap" style={{ maxHeight: 200, overflowY: "auto" }}>
-            <table>
-              <thead><tr><th>Code</th><th>Name</th><th>Dept</th><th>Face</th></tr></thead>
-              <tbody>
-                {known.length === 0 ? (
-                  <tr><td colSpan={4} style={{ textAlign: "center", padding: 30, color: "var(--text-muted)" }}>No employees enrolled</td></tr>
-                ) : known.map((e) => (
-                  <tr key={e.id}>
-                    <td>{e.employeeCode}</td>
-                    <td>{e.firstName} {e.lastName}</td>
-                    <td>{e.department}</td>
-                    <td><span className="badge badge-success">✅</span></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <style>{`
-          @keyframes flash-success { 0% { background: rgba(34,197,94,0.15); } 100% { background: transparent; } }
-          @keyframes flash-accent { 0% { background: rgba(99,102,241,0.15); } 100% { background: transparent; } }
-          @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
-          .flash-success { animation: flash-success 0.3s ease-out; }
-          .flash-accent { animation: flash-accent 0.3s ease-out; }
-        `}</style>
       </main>
     </div>
   );
