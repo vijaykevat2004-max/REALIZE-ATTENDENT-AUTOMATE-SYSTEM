@@ -13,11 +13,7 @@ function EmployeeForm() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [form, setForm] = useState({
-    firstName: "", lastName: "", email: "", mobile: "", aadhaar: "", pan: "",
-    gender: "MALE", maritalStatus: "SINGLE", dateOfBirth: "", bloodGroup: "",
-    address: "", city: "", state: "", pincode: "", emergencyContact: "", emergencyPhone: "",
-    bankName: "", bankAccount: "", bankIfsc: "", department: "", designation: "",
-    shiftType: "GENERAL", joinDate: "",
+    firstName: "", lastName: "", email: "", department: "", shiftType: "GENERAL",
   });
   const [faceStatus, setFaceStatus] = useState<"idle" | "encoding" | "done" | "error">("idle");
   const [preview, setPreview] = useState<string | null>(null);
@@ -99,17 +95,8 @@ function EmployeeForm() {
     { label: "First Name", key: "firstName", required: true },
     { label: "Last Name", key: "lastName", required: true },
     { label: "Email", key: "email", type: "email", required: true },
-    { label: "Mobile", key: "mobile" }, { label: "Aadhaar", key: "aadhaar" }, { label: "PAN", key: "pan" },
-    { label: "Gender", key: "gender", type: "select", options: ["MALE", "FEMALE", "OTHER"] },
-    { label: "Marital Status", key: "maritalStatus", type: "select", options: ["SINGLE", "MARRIED", "DIVORCED", "WIDOWED"] },
-    { label: "Date of Birth", key: "dateOfBirth", type: "date" }, { label: "Blood Group", key: "bloodGroup" },
-    { label: "Address", key: "address", type: "textarea" }, { label: "City", key: "city" }, { label: "State", key: "state" },
-    { label: "Pincode", key: "pincode" }, { label: "Emergency Contact", key: "emergencyContact" },
-    { label: "Emergency Phone", key: "emergencyPhone" }, { label: "Bank Name", key: "bankName" },
-    { label: "Bank Account", key: "bankAccount" }, { label: "Bank IFSC", key: "bankIfsc" },
-    { label: "Department", key: "department" }, { label: "Designation", key: "designation" },
-    { label: "Shift Type", key: "shiftType", type: "select", options: ["GENERAL", "MORNING", "NIGHT"] },
-    { label: "Join Date", key: "joinDate", type: "date" },
+    { label: "Department", key: "department" },
+    { label: "Shift", key: "shiftType", type: "select", options: ["GENERAL", "MORNING", "NIGHT"] },
   ];
 
   return (
