@@ -24,5 +24,11 @@ export async function POST(req: NextRequest) {
     data.employeeCode = code;
     const employee = await prisma.employee.create({ data });
     return NextResponse.json(employee, { status: 201 });
-  } catch (e: any) { return NextResponse.json({ error: e.message }, { status: 400 }); }
+  } catch (e: any) {
+    if (e.code === "P2002") {
+      const field = e.meta?.target?.[0] || "field";
+      return NextResponse.json({ error: `An employee with this ${field} already exists` }, { status: 409 });
+    }
+    return NextResponse.json({ error: e.message }, { status: 400 });
+  }
 }
