@@ -3,6 +3,7 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import Sidebar from "@/components/Sidebar";
 import { AuthProvider, useAuth } from "@/components/AuthProvider";
 import { useRouter } from "next/navigation";
+import { encodeFace } from "@/lib/face";
 
 interface KioskEmployee {
   id: string; firstName: string; lastName: string; employeeCode: string; department: string; encoding: number[];
@@ -27,8 +28,7 @@ interface DetectionInfo {
   message: string;
 }
 
-const AI_URL = "https://hrms-ai-abv8.onrender.com";
-const MATCH_THRESHOLD = 0.65;
+const MATCH_THRESHOLD = 0.6;
 const MARK_COOLDOWN = 15000;
 const CAPTURE_INTERVAL = 2000;
 const MOTION_THRESHOLD = 4;
@@ -174,25 +174,13 @@ function KioskContent() {
       ctx.drawImage(video, 0, 0);
       frameDataUrl = canvas.toDataURL("image/jpeg", 0.85);
       const blob = await (await fetch(frameDataUrl)).blob();
-      const form = new FormData();
-      form.append("image", blob, "frame.jpg");
       checkTime = new Date().toLocaleTimeString();
-      console.log(`📤 Sending to AI (${(blob.size / 1024).toFixed(1)}KB)...`);
-      addDet({ time: checkTime, type: "check", message: "Sending to AI..." });
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000);
-      const encRes = await fetch(`${AI_URL}/encode-face?min_det_score=0.4`, { method: "POST", body: form, signal: controller.signal });
-      clearTimeout(timeoutId);
-      if (!encRes.ok) {
-        addDet({ time: checkTime, type: "fail", message: `AI returned ${encRes.status}` });
-        console.log(`❌ AI returned ${encRes.status}`);
-        capturingRef.current = false;
-        return;
-      }
-      const encData = await encRes.json();
-      const faceCount = encData.faces || 0;
-      addDet({ time: checkTime, type: "check", faceCount, message: `AI found ${faceCount} face(s)` });
-      console.log(`🤖 AI response: faces=${faceCount}, success=${encData.success}, message=${encData.message || "ok"}`);
+      console.log(`🔍 Encoding face locally (${(blob.size / 1024).toFixed(1)}KB)...`);
+      addDet({ time: checkTime, type: "check", message: "Encoding face locally..." });
+      const encData = await encodeFace(blob);
+      const faceCount = encData.encodings?.length || 0;
+      addDet({ time: checkTime, type: "check", faceCount, message: `Detected ${faceCount} face(s)` });
+      console.log(`🤖 Browser face-api: success=${encData.success}, message=${encData.message || "ok"}`);
       if (!encData.success || !encData.encodings?.length) {
         addDet({ time: checkTime, type: "fail", faceCount: 0, message: encData.message || "No face detected" });
         console.log(`❌ AI detection failed: ${encData.message || "No face"}`);

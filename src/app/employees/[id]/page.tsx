@@ -4,6 +4,7 @@ import Sidebar from "@/components/Sidebar";
 import { AuthProvider, useAuth } from "@/components/AuthProvider";
 import { useRouter, useParams } from "next/navigation";
 import Link from "next/link";
+import { encodeFace } from "@/lib/face";
 
 function EditEmployeeContent({ employeeId }: { employeeId: string }) {
   const { token, loading: authLoading } = useAuth();
@@ -197,18 +198,18 @@ function FaceEnroll({ employeeId, token }: { employeeId: string; token: string |
     setMessage("");
     try {
       const blob = await (await fetch(capturedImg)).blob();
-      const aiUrl = process.env.NEXT_PUBLIC_AI_SERVICE_URL || "https://hrms-ai-abv8.onrender.com";
-      const form = new FormData();
-      form.append("image", blob, "face.jpg");
       await fetch(`/api/employees/${employeeId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ photoUrl: capturedImg }),
       });
-      const encRes = await fetch(`${aiUrl}/encode-face`, { method: "POST", body: form });
-      if (!encRes.ok) { setMessage("AI service unavailable. Deploy the AI service first."); setSaving(false); return; }
-      const encData = await encRes.json();
-      if (!encData.success) { setMessage("No face detected in image"); setSaving(false); return; }
+      setMessage("Encoding face...");
+      const encData = await encodeFace(blob);
+      if (!encData.success || !encData.encodings?.length) {
+        setMessage(encData.message || "No face detected in image");
+        setSaving(false);
+        return;
+      }
       const embedding = JSON.stringify(encData.encodings[0]);
       const res = await fetch(`/api/employees/face/${employeeId}`, {
         method: "PUT",

@@ -4,8 +4,7 @@ import Sidebar from "@/components/Sidebar";
 import { AuthProvider, useAuth } from "@/components/AuthProvider";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-
-const AI_URL = "https://hrms-ai-abv8.onrender.com";
+import { encodeFace } from "@/lib/face";
 
 function EmployeeForm() {
   const { token } = useAuth();
@@ -65,18 +64,11 @@ function EmployeeForm() {
       setPreview(photoDataUrl);
 
       const blob = await (await fetch(photoDataUrl)).blob();
-      const fd = new FormData();
-      fd.append("image", blob, "face.jpg");
 
       setFaceStatus("encoding");
-      const encRes = await fetch(`${AI_URL}/encode-face?min_det_score=0.4`, { method: "POST", body: fd });
-      if (!encRes.ok) throw new Error("AI service unavailable");
-      const encData = await encRes.json();
+      const encData = await encodeFace(blob);
       if (!encData.success || !encData.encodings?.length) {
-        const q = encData.quality;
-        if (q?.blurry) throw new Error("Photo too blurry. Hold still and try again.");
-        if (q?.dark) throw new Error("Too dark. Move to better lighting.");
-        throw new Error("No face detected. Look directly at camera in good lighting.");
+        throw new Error(encData.message || "No face detected. Look directly at camera in good lighting.");
       }
       const embedding = JSON.stringify(encData.encodings[0]);
 
@@ -106,9 +98,7 @@ function EmployeeForm() {
       setFaceStatus("done");
       setTimeout(() => router.push("/employees"), 1500);
     } catch (err: any) {
-      const msg = err.message || "Error";
-      if (msg === "Failed to fetch") setError("AI service unreachable. Go to Render dashboard → hrms-ai → Manual Deploy to redeploy.");
-      else setError(msg);
+      setError(err.message || "Error");
       setFaceStatus("error");
     }
     setSaving(false);
