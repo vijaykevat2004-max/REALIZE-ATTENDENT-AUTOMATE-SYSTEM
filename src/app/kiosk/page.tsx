@@ -28,10 +28,10 @@ interface DetectionInfo {
 }
 
 const AI_URL = "https://hrms-ai-abv8.onrender.com";
-const MATCH_THRESHOLD = 0.7;
-const MARK_COOLDOWN = 30000;
-const CAPTURE_INTERVAL = 3000;
-const MOTION_THRESHOLD = 8;
+const MATCH_THRESHOLD = 0.75;
+const MARK_COOLDOWN = 15000;
+const CAPTURE_INTERVAL = 2000;
+const MOTION_THRESHOLD = 4;
 const MOTION_FRAME_W = 80;
 const MOTION_FRAME_H = 60;
 
@@ -64,6 +64,8 @@ function KioskContent() {
   const prevFrameRef = useRef<ImageData | null>(null);
   const lastCaptureRef = useRef(0);
   const animFrameRef = useRef<number>(0);
+  const capturingRef = useRef(false);
+  const capturingCount = useRef(0);
   const [stats, setStats] = useState({ total: 0, enrolled: 0, todayIn: 0, todayOut: 0, activeNow: 0 });
   const [camStatus, setCamStatus] = useState("initializing");
 
@@ -154,32 +156,46 @@ function KioskContent() {
     return diff / (prev.length / 4) > MOTION_THRESHOLD;
   };
 
-  const captureAndRecognize = async () => {
+  const captureAndRecognize = async (force = false) => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
     if (!video || !canvas || !token || known.length === 0) return;
-    canvas.width = video.videoWidth || 640;
-    canvas.height = video.videoHeight || 480;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.drawImage(video, 0, 0);
-    const frameDataUrl = canvas.toDataURL("image/jpeg", 0.85);
-    const blob = await (await fetch(frameDataUrl)).blob();
-    const form = new FormData();
-    form.append("image", blob, "frame.jpg");
-    const checkTime = new Date().toLocaleTimeString();
-    addDet({ time: checkTime, type: "check", message: "Sending to AI..." });
+    if (capturingRef.current) { console.log("⏳ Already capturing, skipping"); return; }
+    capturingRef.current = true;
+    let checkTime = "";
+    let frameDataUrl = "";
+    console.log(`📸 captureAndRecognize called (force=${force}), known=${known.length}`);
     try {
-      const encRes = await fetch(`${AI_URL}/encode-face?min_det_score=0.4`, { method: "POST", body: form });
+      canvas.width = video.videoWidth || 640;
+      canvas.height = video.videoHeight || 480;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) { capturingRef.current = false; return; }
+      ctx.drawImage(video, 0, 0);
+      frameDataUrl = canvas.toDataURL("image/jpeg", 0.85);
+      const blob = await (await fetch(frameDataUrl)).blob();
+      const form = new FormData();
+      form.append("image", blob, "frame.jpg");
+      checkTime = new Date().toLocaleTimeString();
+      console.log(`📤 Sending to AI (${(blob.size / 1024).toFixed(1)}KB)...`);
+      addDet({ time: checkTime, type: "check", message: "Sending to AI..." });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+      const encRes = await fetch(`${AI_URL}/encode-face?min_det_score=0.4`, { method: "POST", body: form, signal: controller.signal });
+      clearTimeout(timeoutId);
       if (!encRes.ok) {
         addDet({ time: checkTime, type: "fail", message: `AI returned ${encRes.status}` });
+        console.log(`❌ AI returned ${encRes.status}`);
+        capturingRef.current = false;
         return;
       }
       const encData = await encRes.json();
       const faceCount = encData.faces || 0;
       addDet({ time: checkTime, type: "check", faceCount, message: `AI found ${faceCount} face(s)` });
+      console.log(`🤖 AI response: faces=${faceCount}, success=${encData.success}, message=${encData.message || "ok"}`);
       if (!encData.success || !encData.encodings?.length) {
         addDet({ time: checkTime, type: "fail", faceCount: 0, message: encData.message || "No face detected" });
+        console.log(`❌ AI detection failed: ${encData.message || "No face"}`);
+        capturingRef.current = false;
         return;
       }
       const now = Date.now();
@@ -226,7 +242,11 @@ function KioskContent() {
         }
       }
     } catch (e: any) {
+      console.log(`❌ capture error: ${e.message || "unknown"}`);
       addDet({ time: checkTime, type: "fail", message: `Error: ${e.message || "unknown"}` });
+    } finally {
+      capturingRef.current = false;
+      console.log(`✅ captureAndRecognize done (${capturingCount.current++})`);
     }
   };
 
@@ -238,11 +258,13 @@ function KioskContent() {
       animFrameRef.current = requestAnimationFrame(loop);
       try {
         const motion = detectMotion();
-        if (motion && Date.now() - lastCaptureRef.current >= CAPTURE_INTERVAL) {
+        const elapsed = Date.now() - lastCaptureRef.current;
+        // Capture on motion OR at least every 8 seconds (stills)
+        if ((motion || elapsed >= 8000) && elapsed >= CAPTURE_INTERVAL) {
           lastCaptureRef.current = Date.now();
           captureAndRecognize();
         }
-      } catch {}
+      } catch (e) { console.log("loop error:", e); }
     };
     loop();
     return () => { running = false; cancelAnimationFrame(animFrameRef.current); };
@@ -298,7 +320,10 @@ function KioskContent() {
             {!active ? (
               <button className="btn btn-success" onClick={startKiosk}>▶ Start Kiosk</button>
             ) : (
-              <button className="btn btn-danger" onClick={stopKiosk}>⏹ Stop</button>
+              <>
+                <button className="btn btn-primary" onClick={() => captureAndRecognize(true)}>📸 Capture Now</button>
+                <button className="btn btn-danger" onClick={stopKiosk}>⏹ Stop</button>
+              </>
             )}
           </div>
         </div>
