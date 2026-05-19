@@ -3,7 +3,8 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import Sidebar from "@/components/Sidebar";
 import { AuthProvider, useAuth } from "@/components/AuthProvider";
 import { useRouter } from "next/navigation";
-import { encodeAllFaces, encodeAllFacesFromVideo, getLoadingStatus } from "@/lib/face";
+import { encodeAllFacesFromVideo } from "@/lib/face";
+import { aiWarmUp } from "@/lib/aiService";
 
 interface KioskEmployee {
   id: string; firstName: string; lastName: string; employeeCode: string; department: string; encoding: number[];
@@ -28,7 +29,7 @@ interface DetectionInfo {
   message: string;
 }
 
-const MATCH_THRESHOLD = 0.6;
+const MATCH_THRESHOLD = 0.7;
 const MARK_COOLDOWN = 15000;
 const CAPTURE_INTERVAL = 2000;
 const MOTION_THRESHOLD = 4;
@@ -73,7 +74,6 @@ function KioskContent() {
   const capturingCount = useRef(0);
   const [stats, setStats] = useState({ total: 0, enrolled: 0, todayIn: 0, todayOut: 0, activeNow: 0 });
   const [camStatus, setCamStatus] = useState("initializing");
-  const [modelLoading, setModelLoading] = useState("");
   const [modelReady, setModelReady] = useState(false);
   const [debugOverlay, setDebugOverlay] = useState({ status: "initializing", faces: 0, dims: 0, error: "", lastOk: "" });
   const [capturedPreview, setCapturedPreview] = useState<string | null>(null);
@@ -100,40 +100,18 @@ function KioskContent() {
     canvas.width = video.videoWidth || 640;
     canvas.height = video.videoHeight || 480;
     ctx.drawImage(video, 0, 0);
-    console.log(`📹 Video dims: ${video.videoWidth}x${video.videoHeight}, canvas: ${canvas.width}x${canvas.height}`);
     const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
     setCapturedPreview(dataUrl);
-    // Pixel diagnostic
-    let pixelInfo = "";
-    try {
-      const center = ctx.getImageData(Math.round(canvas.width/2), Math.round(canvas.height/2), 1, 1).data;
-      // Sample 4 corners too
-      const tl = ctx.getImageData(10, 10, 1, 1).data;
-      const tr = ctx.getImageData(canvas.width-10, 10, 1, 1).data;
-      const bl = ctx.getImageData(10, canvas.height-10, 1, 1).data;
-      const br = ctx.getImageData(canvas.width-10, canvas.height-10, 1, 1).data;
-      pixelInfo = `c(${center[0]},${center[1]},${center[2]}) tl(${tl[0]},${tl[1]},${tl[2]}) br(${br[0]},${br[1]},${br[2]})`;
-    } catch (e) { pixelInfo = "px:ERROR"; }
-    addDet({ time: new Date().toLocaleTimeString(), type: "check", message: `Test: canvas ${canvas.width}x${canvas.height} ${pixelInfo}...` });
-    console.log(`🔍 TEST canvas ${canvas.width}x${canvas.height} pixel@center: ${pixelInfo}`);
-
-    // Also try with Image element (blob URL) - same as enrollment flow
-    let imgResult = "?";
-    try {
-      const blob = await (await fetch(dataUrl)).blob();
-      const imgEnc = await encodeAllFaces(blob);
-      imgResult = imgEnc.success ? `${imgEnc.encodings!.length} faces` : imgEnc.message!;
-    } catch (e: any) { imgResult = `err:${e.message}`; }
-
     const t0 = performance.now();
+    addDet({ time: new Date().toLocaleTimeString(), type: "check", message: "Sending to AI for detection..." });
+    const blob = await (await fetch(dataUrl)).blob();
     const encData = await encodeAllFacesFromVideo(canvas);
     const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
     const dim = encData.encodings?.[0]?.length || 0;
     const count = encData.encodings?.length || 0;
-    const scores = encData.scores?.map(s => Math.round(s * 100)).join(", ") || "none";
     addDet({ time: new Date().toLocaleTimeString(), type: count > 0 ? "match" : "fail", faceCount: count,
-      message: `Test: ${count} face(s) dim=${dim} scores=[${scores}] ${elapsed}s — ${encData.message || "ok"} | img:${imgResult}` });
-    setDebugInfo(d => ({ ...d, lastResult: `${count} faces dim=${dim} in ${elapsed}s img:${imgResult}` }));
+      message: `AI: ${count} face(s) dim=${dim} in ${elapsed}s — ${encData.message || "ok"}` });
+    setDebugInfo(d => ({ ...d, lastResult: `${count} faces dim=${dim} in ${elapsed}s` }));
   };
 
   useEffect(() => {
@@ -206,18 +184,12 @@ function KioskContent() {
       prevFrameRef.current = null;
       setActive(true);
       setDetections([]);
-      addDet({ time: new Date().toLocaleTimeString(), type: "info", message: "Kiosk started automatically" });
-      // Monitor model loading
-      const checkModels = setInterval(() => {
-        const status = getLoadingStatus();
-        if (status) { setModelLoading(status); addDet({ time: new Date().toLocaleTimeString(), type: "info", message: status }); }
-        if (!status) {
-          setModelLoading("");
-          setModelReady(true);
-          clearInterval(checkModels);
-          addDet({ time: new Date().toLocaleTimeString(), type: "info", message: "Face recognition model ready" });
-        }
-      }, 500);
+      addDet({ time: new Date().toLocaleTimeString(), type: "info", message: "Kiosk started" });
+      // Warm up AI service
+      aiWarmUp().then(ok => {
+        if (ok) { setModelReady(true); addDet({ time: new Date().toLocaleTimeString(), type: "info", message: "AI service connected" }); }
+        else { addDet({ time: new Date().toLocaleTimeString(), type: "info", message: "AI service warming up (slow first request)" }); }
+      });
     } catch (e: any) {
       setCamStatus("camera blocked");
       addDet({ time: new Date().toLocaleTimeString(), type: "info", message: "Camera access denied. Click Start Kiosk manually." });
@@ -281,8 +253,7 @@ function KioskContent() {
       const maxScore = encData.quality?.max_detection_score ? Math.round(encData.quality.max_detection_score * 100) : 0;
       setDebugOverlay(d => ({ ...d, status: "detecting", faces: faceCount, dims, error: encData.success ? "" : (encData.message || "") }));
       addDet({ time: checkTime, type: "check", faceCount, message: `Detected ${faceCount} face(s) (confidence: ${maxScore}%, dim: ${dims})` });
-      console.log(`🤖 face-api: faces=${faceCount}, dim=${dims}, success=${encData.success}, message=${encData.message || "ok"}`);
-      if (!encData.success || !encData.encodings?.length) {
+      console.log(`🤖 AI service: faces=${faceCount}, dim=${dims}`);      if (!encData.success || !encData.encodings?.length) {
         addDet({ time: checkTime, type: "fail", faceCount: 0, message: encData.message || "No face detected" });
         setDebugOverlay(d => ({ ...d, status: "no face", error: encData.message || "No face" }));
         return;
@@ -436,8 +407,8 @@ function KioskContent() {
         </div>
 
         <div style={{ display: "flex", gap: 12, fontSize: 12, marginBottom: 8, color: "var(--text-muted)", flexWrap: "wrap" }}>
-          <span>📦 Models: {modelReady ? "✅ ready" : modelLoading || "loading..."}</span>
-          <span>🔍 TinyFace</span>
+          <span>🤖 AI: {modelReady ? "✅ connected" : "⏳ warming..."}</span>
+          <span>🔍 AI Server</span>
           <span>👥 Known: {known.length} employees</span>
           <span>📸 Captures: {capturingCount.current}</span>
           <span>🔬 Last: {debugInfo.lastResult || "—"}</span>
@@ -464,11 +435,6 @@ function KioskContent() {
           </div>
         )}
 
-        {modelLoading && (
-          <div className="alert alert-info" style={{ marginBottom: 12, fontSize: 13 }}>
-            ⏳ {modelLoading}
-          </div>
-        )}
         <div className="grid-2" style={{ marginBottom: 24 }}>
           <div className="card">
             <h3 style={{ marginBottom: 12, fontSize: 15 }}>Live Camera {active ? "🟢" : "⚫"}</h3>

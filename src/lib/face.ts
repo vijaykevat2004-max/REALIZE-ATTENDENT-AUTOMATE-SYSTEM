@@ -1,51 +1,6 @@
 "use client";
 
-type FaceApiModule = typeof import("@vladmandic/face-api");
-let faceapi: FaceApiModule | null = null;
-
-let modelsLoaded = false;
-let loadPromise: Promise<void> | null = null;
-let loadingStatus = "";
-
-export function getLoadingStatus(): string {
-  return loadingStatus;
-}
-
-async function getFaceApi(): Promise<FaceApiModule> {
-  if (!faceapi) {
-    faceapi = await import("@vladmandic/face-api");
-    try {
-      await (faceapi.tf as any).setBackend("cpu");
-      await (faceapi.tf as any).ready();
-    } catch (e) {
-      console.warn("TF.js CPU backend:", e);
-    }
-  }
-  return faceapi;
-}
-
-async function ensureModels(): Promise<void> {
-  if (modelsLoaded) return;
-  if (loadPromise) return loadPromise;
-  loadPromise = (async () => {
-    const api = await getFaceApi();
-    try {
-      await (api.tf as any).ready();
-    } catch (e) {
-      console.warn("TF.js ready:", e);
-    }
-    const base = window.location.origin + "/models";
-    loadingStatus = "Loading TinyFace detector...";
-    await api.nets.tinyFaceDetector.loadFromUri(base);
-    loadingStatus = "Loading face landmarks...";
-    await api.nets.faceLandmark68Net.loadFromUri(base);
-    loadingStatus = "Loading face recognition...";
-    await api.nets.faceRecognitionNet.loadFromUri(base);
-    modelsLoaded = true;
-    loadingStatus = "";
-  })();
-  return loadPromise;
-}
+import { aiEncodeFace, aiCheckQuality, aiWarmUp } from "./aiService";
 
 export type FaceEncoding = number[];
 
@@ -59,87 +14,32 @@ export interface QualityResult {
   max_detection_score?: number;
 }
 
-async function ensureLoaded(img: HTMLImageElement): Promise<HTMLImageElement> {
-  if (img.complete && img.naturalWidth > 0) return img;
-  return new Promise((resolve, reject) => {
-    img.onload = () => resolve(img);
-    img.onerror = reject;
+// Warm up AI service on first call
+let warmedUp = false;
+async function ensureAi(): Promise<void> {
+  if (warmedUp) return;
+  warmedUp = true;
+  // Don't wait for warm-up, let first request trigger it naturally
+  aiWarmUp().catch(() => {});
+}
+
+export function getLoadingStatus(): string {
+  return "";
+}
+
+async function blobFromSource(
+  source: HTMLVideoElement | HTMLCanvasElement | Blob
+): Promise<Blob> {
+  if (source instanceof Blob) return source;
+  const canvas = source instanceof HTMLCanvasElement ? source : document.createElement("canvas");
+  if (source instanceof HTMLVideoElement) {
+    canvas.width = source.videoWidth || 640;
+    canvas.height = source.videoHeight || 480;
+    canvas.getContext("2d")!.drawImage(source, 0, 0);
+  }
+  return new Promise((resolve) => {
+    canvas.toBlob((b) => resolve(b || new Blob([])), "image/jpeg", 0.92);
   });
-}
-
-async function detectWithFaceApi(
-  source: HTMLVideoElement | HTMLCanvasElement | HTMLImageElement
-): Promise<{
-  success: boolean;
-  encodings?: FaceEncoding[];
-  locations?: number[][];
-  scores?: number[];
-  message?: string;
-}> {
-  const api = await getFaceApi();
-  await ensureModels();
-
-  const opts = new api.TinyFaceDetectorOptions({ inputSize: 160, scoreThreshold: 0.1 });
-  const results = await api
-    .detectAllFaces(source, opts)
-    .withFaceLandmarks()
-    .withFaceDescriptors();
-
-  const encodings: FaceEncoding[] = [];
-  const locations: number[][] = [];
-  const scores: number[] = [];
-
-  for (const r of results) {
-    const desc = Array.from(r.descriptor);
-    const score = r.detection.score;
-    const box = r.detection.box;
-    if (box.width < 30 || box.height < 30) continue;
-    encodings.push(desc);
-    locations.push([box.x, box.y, box.width, box.height]);
-    scores.push(score);
-  }
-
-  if (encodings.length === 0) {
-    return { success: false, message: "No face detected." };
-  }
-
-  return { success: true, encodings, locations, scores };
-}
-
-export async function encodeAllFacesFromVideo(
-  source: HTMLVideoElement | HTMLCanvasElement
-): Promise<{
-  success: boolean;
-  encodings?: FaceEncoding[];
-  locations?: number[][];
-  scores?: number[];
-  message?: string;
-  quality?: QualityResult;
-}> {
-  try {
-    const result = await detectWithFaceApi(source);
-    if (!result.success) {
-      return { success: false, message: result.message };
-    }
-    const maxScore = Math.max(...(result.scores || [1]));
-    return {
-      success: true,
-      encodings: result.encodings,
-      locations: result.locations,
-      scores: result.scores,
-      quality: {
-        blurry: maxScore < 0.3,
-        blur_score: Math.round(maxScore * 100),
-        dark: false,
-        brightness: 128,
-        good_quality: maxScore >= 0.4,
-        face_count: result.encodings!.length,
-        max_detection_score: maxScore,
-      },
-    };
-  } catch (err: any) {
-    return { success: false, message: err.message || "Face processing failed" };
-  }
 }
 
 export async function encodeAllFaces(
@@ -152,38 +52,43 @@ export async function encodeAllFaces(
   message?: string;
   quality?: QualityResult;
 }> {
-  try {
-    const img = new Image();
-    img.src = URL.createObjectURL(imageBlob);
-    await ensureLoaded(img);
-    if (!img.naturalWidth || !img.naturalHeight) {
-      URL.revokeObjectURL(img.src);
-      return { success: false, message: "Invalid image" };
-    }
-    const result = await detectWithFaceApi(img);
-    URL.revokeObjectURL(img.src);
-    if (!result.success) {
-      return { success: false, message: result.message };
-    }
-    const maxScore = Math.max(...(result.scores || [1]));
-    return {
-      success: true,
-      encodings: result.encodings,
-      locations: result.locations,
-      scores: result.scores,
-      quality: {
-        blurry: maxScore < 0.3,
-        blur_score: Math.round(maxScore * 100),
-        dark: false,
-        brightness: 128,
-        good_quality: maxScore >= 0.4,
-        face_count: result.encodings!.length,
-        max_detection_score: maxScore,
-      },
-    };
-  } catch (err: any) {
-    return { success: false, message: err.message || "Face processing failed" };
+  await ensureAi();
+  const result = await aiEncodeFace(imageBlob);
+  if (!result.success) {
+    return { success: false, message: result.message || "AI service unavailable" };
   }
+  const q = result.quality;
+  return {
+    success: true,
+    encodings: result.encodings,
+    locations: result.locations,
+    scores: result.encodings!.map(() => 1.0),
+    quality: {
+      blurry: q?.blurry || false,
+      blur_score: q?.blur_score || 0,
+      dark: q?.dark || false,
+      brightness: q?.brightness || 128,
+      good_quality: q?.good_quality || false,
+      face_count: result.encodings!.length,
+      max_detection_score: 1.0,
+    },
+  };
+}
+
+export async function encodeAllFacesFromVideo(
+  source: HTMLVideoElement | HTMLCanvasElement
+): Promise<{
+  success: boolean;
+  encodings?: FaceEncoding[];
+  locations?: number[][];
+  scores?: number[];
+  message?: string;
+  quality?: QualityResult;
+}> {
+  await ensureAi();
+  const blob = await blobFromSource(source);
+  if (blob.size === 0) return { success: false, message: "Failed to capture frame" };
+  return encodeAllFaces(blob);
 }
 
 export async function encodeFace(
@@ -209,42 +114,28 @@ export async function encodeFace(
 export async function detectFace(
   imageBlob: Blob
 ): Promise<{ count: number; locations?: number[][]; detection_scores?: number[] }> {
-  try {
-    const img = new Image();
-    img.src = URL.createObjectURL(imageBlob);
-    await ensureLoaded(img);
-    const result = await detectWithFaceApi(img);
-    URL.revokeObjectURL(img.src);
-    if (result.success && result.locations) {
-      return { count: result.locations.length, locations: result.locations, detection_scores: result.scores };
-    }
-    return { count: 0 };
-  } catch {
-    return { count: 0 };
+  const result = await encodeAllFaces(imageBlob);
+  if (result.success && result.locations) {
+    return {
+      count: result.locations.length,
+      locations: result.locations,
+      detection_scores: result.scores,
+    };
   }
+  return { count: 0 };
 }
 
 export async function checkQuality(imageBlob: Blob): Promise<QualityResult> {
-  try {
-    const img = new Image();
-    img.src = URL.createObjectURL(imageBlob);
-    await ensureLoaded(img);
-    const result = await detectWithFaceApi(img);
-    URL.revokeObjectURL(img.src);
-    const scores = result.scores || [];
-    const maxScore = scores.length ? Math.max(...scores) : 0;
-    return {
-      blurry: maxScore < 0.3,
-      blur_score: Math.round(maxScore * 100),
-      dark: false,
-      brightness: 128,
-      good_quality: maxScore >= 0.4 && scores.length > 0,
-      face_count: scores.length,
-      max_detection_score: maxScore,
-    };
-  } catch {
-    return { blurry: false, blur_score: 0, dark: false, brightness: 128, good_quality: false };
-  }
+  const q = await aiCheckQuality(imageBlob);
+  return {
+    blurry: q.blurry,
+    blur_score: q.blur_score,
+    dark: q.dark,
+    brightness: q.brightness,
+    good_quality: q.good_quality,
+    face_count: q.face_count,
+    max_detection_score: q.face_count > 0 ? 1.0 : 0,
+  };
 }
 
 export function computeDistance(a: FaceEncoding, b: FaceEncoding): number {
