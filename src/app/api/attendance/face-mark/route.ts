@@ -3,28 +3,32 @@ import { prisma } from "@/lib/prisma";
 import { getEmployeeShiftTimes } from "@/lib/attendanceUtils";
 
 export async function GET(req: NextRequest) {
-  const { searchParams } = new URL(req.url);
-  const date = searchParams.get("date") || new Date().toISOString().split("T")[0];
-  const employeeId = searchParams.get("employeeId") || "";
-  const mode = searchParams.get("mode") || "all";
-  const where: any = { date };
-  if (employeeId) where.employeeId = employeeId;
+  try {
+    const { searchParams } = new URL(req.url);
+    const date = searchParams.get("date") || new Date().toISOString().split("T")[0];
+    const employeeId = searchParams.get("employeeId") || "";
+    const mode = searchParams.get("mode") || "all";
+    const where: any = { date };
+    if (employeeId) where.employeeId = employeeId;
 
-  if (mode === "active") {
-    const active = await prisma.attendanceLog.findMany({
-      where: { date, outTime: null, status: { not: "ABSENT" } },
+    if (mode === "active") {
+      const active = await prisma.attendanceLog.findMany({
+        where: { date, outTime: null, status: { not: "ABSENT" } },
+        include: { employee: { select: { id: true, firstName: true, lastName: true, employeeCode: true, department: true, photoUrl: true } } },
+        orderBy: { inTime: "asc" },
+      });
+      return NextResponse.json(active);
+    }
+
+    const logs = await prisma.faceDetectionLog.findMany({
+      where,
       include: { employee: { select: { id: true, firstName: true, lastName: true, employeeCode: true, department: true, photoUrl: true } } },
-      orderBy: { inTime: "asc" },
+      orderBy: { createdAt: "asc" },
     });
-    return NextResponse.json(active);
+    return NextResponse.json(logs);
+  } catch (e: any) {
+    return NextResponse.json({ error: e.message }, { status: 500 });
   }
-
-  const logs = await prisma.faceDetectionLog.findMany({
-    where,
-    include: { employee: { select: { id: true, firstName: true, lastName: true, employeeCode: true, department: true, photoUrl: true } } },
-    orderBy: { createdAt: "asc" },
-  });
-  return NextResponse.json(logs);
 }
 
 export async function POST(req: NextRequest) {

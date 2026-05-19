@@ -13,8 +13,12 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
 }
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
-  const emp = await prisma.employee.findUnique({ where: { id }, select: { id: true, faceEmbedding: true } });
-  if (!emp) return NextResponse.json({ error: "Not found" }, { status: 404 });
-  return NextResponse.json({ id: emp.id, hasFace: !!emp.faceEmbedding });
+  try {
+    const { id } = await params;
+    const emp = await prisma.employee.findUnique({ where: { id }, select: { id: true, faceEmbedding: true } });
+    if (!emp) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    return NextResponse.json({ id: emp.id, hasFace: !!emp.faceEmbedding });
+  } catch (e: any) {
+    return NextResponse.json({ error: e.message }, { status: 500 });
+  }
 }

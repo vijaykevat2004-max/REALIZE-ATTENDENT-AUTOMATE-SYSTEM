@@ -1,15 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 export async function GET(req: NextRequest) {
-  const { searchParams } = new URL(req.url);
-  const month = searchParams.get("month") ? parseInt(searchParams.get("month")) : new Date().getMonth() + 1;
-  const year = searchParams.get("year") ? parseInt(searchParams.get("year")) : new Date().getFullYear();
-  const data = await prisma.payrollRecord.findMany({
-    where: { month, year },
-    include: { employee: { select: { id: true, firstName: true, lastName: true, employeeCode: true, department: true } } },
-    orderBy: { employee: { firstName: "asc" } },
-  });
-  return NextResponse.json(data);
+  try {
+    const { searchParams } = new URL(req.url);
+    const month = searchParams.get("month") ? parseInt(searchParams.get("month")) : new Date().getMonth() + 1;
+    const year = searchParams.get("year") ? parseInt(searchParams.get("year")) : new Date().getFullYear();
+    const data = await prisma.payrollRecord.findMany({
+      where: { month, year },
+      include: { employee: { select: { id: true, firstName: true, lastName: true, employeeCode: true, department: true } } },
+      orderBy: { employee: { firstName: "asc" } },
+    });
+    return NextResponse.json(data);
+  } catch (e: any) {
+    return NextResponse.json({ error: e.message }, { status: 500 });
+  }
 }
 export async function POST(req: NextRequest) {
   try {

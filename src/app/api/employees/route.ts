@@ -1,16 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 export async function GET(req: NextRequest) {
-  const { searchParams } = new URL(req.url);
-  const search = searchParams.get("search") || "";
-  const department = searchParams.get("department") || "";
-  const status = searchParams.get("status") || "";
-  const where: any = {};
-  if (search) where.OR = [{ firstName: { contains: search } }, { lastName: { contains: search } }, { mobile: { contains: search } }, { employeeCode: { contains: search } }];
-  if (department) where.department = department;
-  if (status) where.status = status;
-  const employees = await prisma.employee.findMany({ where, orderBy: { createdAt: "desc" }, include: { salaryConfig: true } });
-  return NextResponse.json(employees);
+  try {
+    const { searchParams } = new URL(req.url);
+    const search = searchParams.get("search") || "";
+    const department = searchParams.get("department") || "";
+    const status = searchParams.get("status") || "";
+    const where: any = {};
+    if (search) where.OR = [{ firstName: { contains: search } }, { lastName: { contains: search } }, { mobile: { contains: search } }, { employeeCode: { contains: search } }];
+    if (department) where.department = department;
+    if (status) where.status = status;
+    const employees = await prisma.employee.findMany({ where, orderBy: { createdAt: "desc" }, include: { salaryConfig: true } });
+    return NextResponse.json(employees);
+  } catch (e: any) {
+    return NextResponse.json({ error: e.message }, { status: 500 });
+  }
 }
 export async function POST(req: NextRequest) {
   try {

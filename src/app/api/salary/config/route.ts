@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 export async function GET() {
-  const data = await prisma.salaryConfig.findMany({ include: { employee: { select: { id: true, firstName: true, lastName: true, employeeCode: true, department: true } } } });
-  return NextResponse.json(data);
+  try {
+    const data = await prisma.salaryConfig.findMany({ include: { employee: { select: { id: true, firstName: true, lastName: true, employeeCode: true, department: true } } } });
+    return NextResponse.json(data);
+  } catch (e: any) {
+    return NextResponse.json({ error: e.message }, { status: 500 });
+  }
 }
 export async function POST(req: NextRequest) {
   try {

@@ -7,13 +7,10 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
     const { status, remarks } = await req.json();
     const lr = await prisma.leaveRequest.update({ where: { id }, data: { status, remarks } });
     if (status === "APPROVED") {
-      const balances = await prisma.leaveBalance.findMany({ where: { employeeId: lr.employeeId } });
-      for (const bal of balances) {
-        await prisma.leaveBalance.update({
-          where: { id: bal.id },
-          data: { used: { increment: lr.days } },
-        });
-      }
+      await prisma.leaveBalance.updateMany({
+        where: { employeeId: lr.employeeId, leaveTypeId: lr.leaveTypeId },
+        data: { used: { increment: lr.days } },
+      });
     }
     return NextResponse.json(lr);
   } catch (e: any) {

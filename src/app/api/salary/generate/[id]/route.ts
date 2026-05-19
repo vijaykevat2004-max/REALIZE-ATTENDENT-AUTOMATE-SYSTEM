@@ -2,13 +2,17 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
-  const p = await prisma.payrollRecord.findUnique({
-    where: { id },
-    include: { employee: true },
-  });
-  if (!p) return NextResponse.json({ error: "Not found" }, { status: 404 });
-  return NextResponse.json(p);
+  try {
+    const { id } = await params;
+    const p = await prisma.payrollRecord.findUnique({
+      where: { id },
+      include: { employee: true },
+    });
+    if (!p) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    return NextResponse.json(p);
+  } catch (e: any) {
+    return NextResponse.json({ error: e.message }, { status: 500 });
+  }
 }
 
 export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
