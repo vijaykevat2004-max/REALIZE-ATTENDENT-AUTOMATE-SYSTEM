@@ -93,13 +93,19 @@ function KioskContent() {
     canvas.width = video.videoWidth || 640;
     canvas.height = video.videoHeight || 480;
     ctx.drawImage(video, 0, 0);
+    console.log(`📹 Video dims: ${video.videoWidth}x${video.videoHeight}, canvas: ${canvas.width}x${canvas.height}`);
     const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
     setCapturedPreview(dataUrl);
     // Pixel diagnostic
     let pixelInfo = "";
     try {
-      const pixel = ctx.getImageData(Math.round(canvas.width/2), Math.round(canvas.height/2), 1, 1).data;
-      pixelInfo = `px(${pixel[0]},${pixel[1]},${pixel[2]})`;
+      const center = ctx.getImageData(Math.round(canvas.width/2), Math.round(canvas.height/2), 1, 1).data;
+      // Sample 4 corners too
+      const tl = ctx.getImageData(10, 10, 1, 1).data;
+      const tr = ctx.getImageData(canvas.width-10, 10, 1, 1).data;
+      const bl = ctx.getImageData(10, canvas.height-10, 1, 1).data;
+      const br = ctx.getImageData(canvas.width-10, canvas.height-10, 1, 1).data;
+      pixelInfo = `c(${center[0]},${center[1]},${center[2]}) tl(${tl[0]},${tl[1]},${tl[2]}) br(${br[0]},${br[1]},${br[2]})`;
     } catch (e) { pixelInfo = "px:ERROR"; }
     addDet({ time: new Date().toLocaleTimeString(), type: "check", message: `Test: canvas ${canvas.width}x${canvas.height} ${pixelInfo}...` });
     console.log(`🔍 TEST canvas ${canvas.width}x${canvas.height} pixel@center: ${pixelInfo}`);
@@ -207,6 +213,7 @@ function KioskContent() {
     if (!ctx) return false;
     mc.width = MOTION_FRAME_W; mc.height = MOTION_FRAME_H;
     ctx.drawImage(video, 0, 0, MOTION_FRAME_W, MOTION_FRAME_H);
+    if (!prevFrameRef.current && video.videoWidth) console.log(`📹 First motion frame: ${video.videoWidth}x${video.videoHeight}`);
     const current = ctx.getImageData(0, 0, MOTION_FRAME_W, MOTION_FRAME_H);
     if (!prevFrameRef.current) { prevFrameRef.current = current; return true; }
     const prev = prevFrameRef.current.data;
@@ -234,6 +241,7 @@ function KioskContent() {
       canvas.width = video.videoWidth || 640;
       canvas.height = video.videoHeight || 480;
       ctx.drawImage(video, 0, 0);
+      console.log(`📹 Video dims: ${video.videoWidth}x${video.videoHeight}, canvas: ${canvas.width}x${canvas.height}`);
       checkTime = new Date().toLocaleTimeString();
       setDebugOverlay(d => ({ ...d, lastOk: `${canvas.width}x${canvas.height} @ ${checkTime}` }));
       console.log(`🔍 Detecting faces from canvas (${canvas.width}x${canvas.height})...`);
