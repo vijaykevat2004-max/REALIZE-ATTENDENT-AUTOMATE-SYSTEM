@@ -1,21 +1,19 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List
 import cv2
 import numpy as np
 from io import BytesIO
 from PIL import Image
 import base64
-import json
 import os
 import logging
-import urllib.request
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("hrms-ai")
 
-app = FastAPI(title="HRMS AI Face Service", version="4.0.0")
+app = FastAPI(title="HRMS AI Face Service", version="5.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -24,50 +22,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-YUNET_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
-SFACE_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx"
+# Load face cascades (built into OpenCV, no downloads)
+cascades = []
+cascade_paths = [
+    cv2.data.haarcascades + "haarcascade_frontalface_default.xml",
+    cv2.data.haarcascades + "haarcascade_frontalface_alt2.xml",
+    cv2.data.haarcascades + "haarcascade_profileface.xml",
+]
+for p in cascade_paths:
+    c = cv2.CascadeClassifier(p)
+    if not c.empty():
+        cascades.append(c)
+        logger.info(f"Loaded cascade: {os.path.basename(p)}")
 
-MODEL_DIR = os.path.join(os.path.dirname(__file__), "models")
-YUNET_PATH = os.path.join(MODEL_DIR, "face_detection_yunet_2023mar.onnx")
-SFACE_PATH = os.path.join(MODEL_DIR, "face_recognition_sface_2021dec.onnx")
-
-face_detector = None
-face_recognizer = None
-insightface_available = False
-
-def download_model(url, path):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    if not os.path.exists(path):
-        logger.info(f"Downloading {os.path.basename(path)}...")
-        urllib.request.urlretrieve(url, path)
-        logger.info(f"Downloaded {os.path.basename(path)}")
-
-def init_models():
-    global face_detector, face_recognizer, insightface_available
-    try:
-        import insightface
-        from insightface.app import FaceAnalysis
-        logger.info("Initializing insightface with buffalo_s model...")
-        insightface_app = FaceAnalysis(name='buffalo_s', providers=['CPUExecutionProvider'])
-        insightface_app.prepare(ctx_id=0, det_size=(320, 320))
-        logger.info("insightface initialized successfully")
-        insightface_available = True
-        return insightface_app
-    except Exception as e:
-        logger.warning(f"insightface not available ({e}), using OpenCV DNN fallback")
-        insightface_available = False
-        try:
-            download_model(YUNET_URL, YUNET_PATH)
-            download_model(SFACE_URL, SFACE_PATH)
-            face_detector = cv2.FaceDetectorYN.create(YUNET_PATH, "", (320, 320), score_threshold=0.5)
-            face_recognizer = cv2.FaceRecognizerSF.create(SFACE_PATH, "")
-            logger.info("OpenCV DNN face detection initialized")
-        except Exception as e2:
-            logger.error(f"OpenCV DNN init failed: {e2}")
-            raise
-    return None
-
-insightface_app = init_models()
+if not cascades:
+    logger.error("No face cascades loaded!")
+else:
+    logger.info(f"Total cascades loaded: {len(cascades)}")
 
 class MatchRequest(BaseModel):
     known_embeddings: List[List[float]]
@@ -96,84 +67,129 @@ def check_quality(img: np.ndarray) -> dict:
         "good_quality": blur_score >= 80 and 40 <= brightness <= 230,
     }
 
-def encode_opencv_faces(img: np.ndarray, min_det_score: float = 0.4) -> dict:
-    h, w = img.shape[:2]
-    face_detector.setInputSize((w, h))
-    _, faces = face_detector.detect(img)
-    if faces is None:
-        return {"success": False, "message": "No face detected"}
-    results = []
-    locations = []
-    scores = []
-    for face in faces.tolist():
-        conf = face[2]
-        if conf < min_det_score:
-            continue
-        x, y, wf, hf = int(face[0]), int(face[1]), int(face[2]), int(face[3])
-        aligned = face_recognizer.alignCrop(img, face)
-        feat = face_recognizer.feature(aligned)
-        results.append(feat.flatten().tolist())
-        locations.append([x, y, wf, hf])
-        scores.append(round(float(conf), 4))
-    if len(results) == 0:
-        return {"success": False, "message": f"Face detected but confidence too low (min: {min_det_score})", "raw_faces": len(faces)}
-    return {
-        "success": True,
-        "faces": len(results),
-        "encodings": results,
-        "locations": locations,
-        "detection_scores": scores,
-        "method": "opencv-dnn",
-        "embedding_dim": len(results[0]) if results else 0,
-    }
+def detect_faces_multi(img: np.ndarray, min_neighbors: int = 3, min_size: int = 60) -> List[tuple]:
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # Enhance contrast for better detection
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    enhanced = clahe.apply(gray)
+    all_faces = []
+    for cascade in cascades:
+        faces = cascade.detectMultiScale(
+            enhanced,
+            scaleFactor=1.1,
+            minNeighbors=min_neighbors,
+            minSize=(min_size, min_size),
+            flags=cv2.CASCADE_SCALE_IMAGE,
+        )
+        for (x, y, w, h) in faces:
+            all_faces.append((x, y, w, h))
+    # Also try on original (non-enhanced) image as fallback
+    for cascade in cascades:
+        faces = cascade.detectMultiScale(
+            gray,
+            scaleFactor=1.15,
+            minNeighbors=min_neighbors + 1,
+            minSize=(min_size, min_size),
+        )
+        for (x, y, w, h) in faces:
+            all_faces.append((x, y, w, h))
+    # Merge overlapping detections (simple NMS)
+    if not all_faces:
+        return []
+    boxes = np.array(all_faces, dtype=np.float32)
+    # Non-maximum suppression
+    picked = []
+    if len(boxes) > 0:
+        x1 = boxes[:, 0]
+        y1 = boxes[:, 1]
+        x2 = boxes[:, 0] + boxes[:, 2]
+        y2 = boxes[:, 1] + boxes[:, 3]
+        areas = (x2 - x1 + 1) * (y2 - y1 + 1)
+        idxs = np.argsort(boxes[:, 2] * boxes[:, 3])[::-1]  # sort by area descending
+        while len(idxs) > 0:
+            last = len(idxs) - 1
+            i = idxs[0]
+            picked.append(i)
+            xx1 = np.maximum(x1[i], x1[idxs[1:]])
+            yy1 = np.maximum(y1[i], y1[idxs[1:]])
+            xx2 = np.minimum(x2[i], x2[idxs[1:]])
+            yy2 = np.minimum(y2[i], y2[idxs[1:]])
+            w_n = np.maximum(0, xx2 - xx1 + 1)
+            h_n = np.maximum(0, yy2 - yy1 + 1)
+            overlap = (w_n * h_n) / areas[idxs[1:]]
+            idxs = np.delete(idxs, np.concatenate(([0], np.where(overlap > 0.3)[0] + 1)))
+    result = [(int(boxes[i][0]), int(boxes[i][1]), int(boxes[i][2]), int(boxes[i][3])) for i in picked]
+    return result
 
-def encode_insightface(img: np.ndarray, min_det_score: float = 0.4) -> dict:
-    faces = insightface_app.get(img)
-    if len(faces) == 0:
-        return {"success": False, "message": "No face detected"}
-    results = []
-    locations = []
-    scores = []
-    for face in faces:
-        if face.det_score < min_det_score:
-            continue
-        results.append(face.embedding.tolist())
-        x1, y1, x2, y2 = face.bbox.astype(int).tolist()
-        locations.append([x1, y1, x2 - x1, y2 - y1])
-        scores.append(round(float(face.det_score), 4))
-    if len(results) == 0:
-        return {"success": False, "message": f"Face detected but confidence too low (min: {min_det_score})", "raw_faces": len(faces)}
-    return {
-        "success": True,
-        "faces": len(results),
-        "encodings": results,
-        "locations": locations,
-        "detection_scores": scores,
-        "method": "insightface-arcface",
-        "embedding_dim": len(results[0]) if results else 0,
-    }
+def compute_embedding(img: np.ndarray, face_rect: tuple) -> np.ndarray:
+    x, y, w, h = face_rect
+    face = img[y:y+h, x:x+w]
+    if face.size == 0:
+        return np.zeros(128, dtype=np.float32)
+    # Resize to standard size
+    face = cv2.resize(face, (128, 128))
+    # Convert to HSV for lighting invariance
+    hsv = cv2.cvtColor(face, cv2.COLOR_BGR2HSV)
+    # Compute 3D histogram (8 bins per channel = 512 features)
+    hist = cv2.calcHist([hsv], [0, 1, 2], None, [8, 8, 8], [0, 180, 0, 256, 0, 256])
+    cv2.normalize(hist, hist)
+    # Add HOG-like features for better discrimination
+    gray_face = cv2.cvtColor(face, cv2.COLOR_BGR2GRAY)
+    # LBP features
+    lbp = np.zeros(256, dtype=np.float32)
+    for i in range(1, gray_face.shape[0] - 1):
+        for j in range(1, gray_face.shape[1] - 1):
+            center = gray_face[i, j]
+            code = 0
+            code |= (gray_face[i-1, j-1] > center) << 7
+            code |= (gray_face[i-1, j] > center) << 6
+            code |= (gray_face[i-1, j+1] > center) << 5
+            code |= (gray_face[i, j+1] > center) << 4
+            code |= (gray_face[i+1, j+1] > center) << 3
+            code |= (gray_face[i+1, j] > center) << 2
+            code |= (gray_face[i+1, j-1] > center) << 1
+            code |= (gray_face[i, j-1] > center) << 0
+            lbp[code] += 1
+    cv2.normalize(lbp, lbp)
+    # Combine histogram + LBP
+    embedding = np.concatenate([hist.flatten(), lbp])
+    return embedding.astype(np.float32)
 
 @app.get("/health")
 def health():
-    method = "insightface-arcface" if insightface_available else "opencv-dnn"
-    model = "buffalo_s" if insightface_available else "yunet+sface"
-    return {"ok": True, "service": "ai", "method": method, "model": model, "status": "ready"}
+    return {"ok": True, "service": "ai", "method": "multi-cascade + HSV+LBP", "cascades": len(cascades), "status": "ready"}
 
 @app.get("/")
 def root():
-    return {"service": "HRMS AI Face Service", "version": "4.0.0", "status": "running"}
+    return {"service": "HRMS AI Face Service", "version": "5.0.0", "status": "running"}
 
 @app.post("/encode-face")
 async def encode_face(image: UploadFile = File(...), min_det_score: float = 0.4):
     try:
         img = load_image(await image.read())
         quality = check_quality(img)
-        if insightface_available:
-            result = encode_insightface(img, min_det_score)
-        else:
-            result = encode_opencv_faces(img, min_det_score)
-        result["quality"] = quality
-        return result
+        faces = detect_faces_multi(img)
+        if len(faces) == 0:
+            return {"success": False, "message": "No face detected after trying multiple cascades", "quality": quality}
+        results = []
+        locations = []
+        for (x, y, w, h) in faces:
+            if w < 60 or h < 60:
+                continue
+            emb = compute_embedding(img, (x, y, w, h))
+            results.append(emb.tolist())
+            locations.append([int(x), int(y), int(w), int(h)])
+        if len(results) == 0:
+            return {"success": False, "message": "Detected faces too small", "quality": quality}
+        return {
+            "success": True,
+            "faces": len(results),
+            "encodings": results,
+            "locations": locations,
+            "quality": quality,
+            "method": "multi-cascade-ms",
+            "embedding_dim": len(results[0]),
+        }
     except Exception as e:
         logger.error(f"encode-face error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -216,48 +232,25 @@ def batch_match(payload: BatchMatchRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/detect-faces")
-async def detect_faces(image: UploadFile = File(...)):
+async def detect_faces_endpoint(image: UploadFile = File(...)):
     try:
         img = load_image(await image.read())
-        if insightface_available:
-            faces = insightface_app.get(img)
-            return {
-                "count": len(faces),
-                "locations": [[int(x) for x in f.bbox] for f in faces],
-                "detection_scores": [round(float(f.det_score), 4) for f in faces],
-            }
-        else:
-            h, w = img.shape[:2]
-            face_detector.setInputSize((w, h))
-            _, faces = face_detector.detect(img)
-            if faces is None:
-                return {"count": 0, "locations": [], "detection_scores": []}
-            return {
-                "count": len(faces),
-                "locations": [[int(x) for x in f[:4]] for f in faces.tolist()],
-                "detection_scores": [round(float(f[2]), 4) for f in faces.tolist()],
-            }
+        faces = detect_faces_multi(img)
+        return {
+            "count": len(faces),
+            "locations": [[int(x) for x in f] for f in faces],
+            "detection_scores": [1.0 for _ in faces],
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/quality-check")
-async def quality_check(image: UploadFile = File(...)):
+async def quality_check_endpoint(image: UploadFile = File(...)):
     try:
         img = load_image(await image.read())
         quality = check_quality(img)
-        if insightface_available:
-            faces = insightface_app.get(img)
-            quality["face_count"] = len(faces)
-            if faces:
-                quality["max_detection_score"] = round(float(max(f.det_score for f in faces)), 4)
-        else:
-            h, w = img.shape[:2]
-            face_detector.setInputSize((w, h))
-            _, faces = face_detector.detect(img)
-            count = 0 if faces is None else len(faces)
-            quality["face_count"] = count
-            if faces is not None:
-                quality["max_detection_score"] = round(float(max(f[2] for f in faces.tolist())), 4)
+        faces = detect_faces_multi(img)
+        quality["face_count"] = len(faces)
         return quality
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -271,24 +264,13 @@ async def anti_spoof(image: UploadFile = File(...)):
         brightness = float(np.mean(gray))
         is_real = laplacian_var > 30 and 20 < brightness < 240
         confidence = round(min(1.0, laplacian_var / 150), 4)
-        if insightface_available:
-            faces = insightface_app.get(img)
-            face_scores = [float(f.det_score) for f in faces] if faces else []
-            avg_face_score = sum(face_scores) / len(face_scores) if face_scores else 0
-            is_real = is_real and avg_face_score > 0.3
-        else:
-            h, w = img.shape[:2]
-            face_detector.setInputSize((w, h))
-            _, faces = face_detector.detect(img)
-            face_scores = [f[2] for f in faces.tolist()] if faces is not None else []
-            avg_face_score = float(np.mean(face_scores)) if face_scores else 0
-            is_real = is_real and avg_face_score > 0.3
+        faces = detect_faces_multi(img)
+        is_real = is_real and len(faces) > 0
         return {
             "real": bool(is_real),
             "confidence": confidence,
-            "face_count": len(faces) if faces is not None else 0,
-            "avg_detection_score": round(avg_face_score, 4),
-            "method": "texture_analysis+face_detection",
+            "face_count": len(faces),
+            "method": "texture_analysis+multi-cascade",
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
