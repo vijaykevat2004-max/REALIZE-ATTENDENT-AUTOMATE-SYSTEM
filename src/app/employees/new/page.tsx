@@ -1,6 +1,7 @@
 "use client";
-import { useState, useRef, useEffect } from "react";
+import { useState } from "react";
 import Sidebar from "@/components/Sidebar";
+import FaceCapture from "@/components/FaceCapture";
 import { AuthProvider, useAuth } from "@/components/AuthProvider";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
@@ -15,43 +16,15 @@ function EmployeeForm() {
     firstName: "", lastName: "", email: "", mobile: "", department: "",
   });
   const [faceStatus, setFaceStatus] = useState<"idle" | "encoding" | "done" | "error">("idle");
-  const [preview, setPreview] = useState<string | null>(null);
-  const [camReady, setCamReady] = useState(false);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [photoBlob, setPhotoBlob] = useState<Blob | null>(null);
+  const [photoUrl, setPhotoUrl] = useState<string | null>(null);
 
   const setField = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
 
-  useEffect(() => {
-    let stream: MediaStream | null = null;
-    (async () => {
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240, facingMode: "user" } });
-        const video = videoRef.current;
-        if (video) {
-          video.srcObject = stream;
-          await video.play();
-          setCamReady(true);
-        }
-      } catch (e: any) {
-        if (e?.name === "NotAllowedError") setError("Camera permission denied. Allow camera access and refresh.");
-        else setError("Camera not available");
-      }
-    })();
-    return () => { if (stream) stream.getTracks().forEach((t) => t.stop()); };
-  }, []);
-
-  const capturePhoto = (): Promise<string> => new Promise((resolve) => {
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    if (!video || !canvas) { resolve(""); return; }
-    canvas.width = video.videoWidth || 320;
-    canvas.height = video.videoHeight || 240;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) { resolve(""); return; }
-    ctx.drawImage(video, 0, 0);
-    resolve(canvas.toDataURL("image/jpeg", 0.9));
-  });
+  const handleCapture = (blob: Blob) => {
+    setPhotoBlob(blob);
+    setPhotoUrl(URL.createObjectURL(blob));
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -59,14 +32,10 @@ function EmployeeForm() {
     setError("");
 
     try {
-      const photoDataUrl = await capturePhoto();
-      if (!photoDataUrl) { setError("Camera not ready — wait or refresh"); setSaving(false); return; }
-      setPreview(photoDataUrl);
-
-      const blob = await (await fetch(photoDataUrl)).blob();
+      if (!photoBlob) { setError("Wait for auto face capture"); setSaving(false); return; }
 
       setFaceStatus("encoding");
-      const encData = await encodeFace(blob);
+      const encData = await encodeFace(photoBlob);
       if (!encData.success || !encData.encodings?.length) {
         throw new Error(encData.message || "No face detected. Look directly at camera in good lighting.");
       }
@@ -82,8 +51,6 @@ function EmployeeForm() {
         designation: form.department || "Staff",
         joinDate: today,
         shiftType: "GENERAL",
-        photoUrl: photoDataUrl,
-        faceEmbedding: embedding,
       };
 
       const res = await fetch("/api/employees", {
@@ -95,6 +62,17 @@ function EmployeeForm() {
         const d = await res.json();
         throw new Error(d.error || "Failed to save");
       }
+
+      const emp = await res.json();
+
+      // Save face encoding
+      const faceRes = await fetch(`/api/employees/face/${emp.id}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ faceEmbedding: embedding }),
+      });
+      if (!faceRes.ok) throw new Error("Face save failed");
+
       setFaceStatus("done");
       setTimeout(() => router.push("/employees"), 1500);
     } catch (err: any) {
@@ -141,7 +119,7 @@ function EmployeeForm() {
                   </div>
                 ))}
               </div>
-              <button type="submit" className="btn btn-primary" disabled={saving || faceStatus === "encoding"} style={{ marginTop: 16 }}>
+              <button type="submit" className="btn btn-primary" disabled={saving || faceStatus === "encoding" || !photoBlob} style={{ marginTop: 16 }}>
                 {saving || faceStatus === "encoding" ? "Processing..." : "Create Employee"}
               </button>
             </form>
@@ -149,28 +127,21 @@ function EmployeeForm() {
 
           <div className="card">
             <h3 style={{ marginBottom: 12, fontSize: 15 }}>Face Capture</h3>
-            <div className="camera-wrap">
-              {preview ? (
-                <img src={preview} alt="Captured" style={{ width: "100%", borderRadius: 8 }} />
-              ) : (
-                <>
-                  <video ref={videoRef} autoPlay playsInline muted style={{ width: "100%", borderRadius: 8 }} />
-                  <div style={{ position: "absolute", bottom: 8, left: 8, right: 8, textAlign: "center" }}>
-                    <span style={{ background: "rgba(0,0,0,0.6)", color: camReady ? "#94a3b8" : "#f59e0b", padding: "4px 12px", borderRadius: 4, fontSize: 12 }}>
-                      {camReady ? "Camera ready" : "Starting camera..."}
-                    </span>
-                  </div>
-                </>
-              )}
-              <canvas ref={canvasRef} style={{ display: "none" }} />
-            </div>
-            <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
-              {faceStatus === "idle" && camReady && <p>📸 Look at camera then click Create.</p>}
-              {faceStatus === "idle" && !camReady && <p>⏳ Camera starting...</p>}
-              {faceStatus === "encoding" && <p>⏳ Encoding face with AI...</p>}
-              {faceStatus === "error" && <p style={{ color: "var(--danger)" }}>❌ {error}</p>}
-              {faceStatus === "done" && <p style={{ color: "var(--success)" }}>✅ Face enrolled!</p>}
-            </div>
+            <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 8 }}>Camera auto-detects your face — no button needed</p>
+            {photoUrl ? (
+              <div>
+                <img src={photoUrl} alt="Captured" style={{ width: "100%", borderRadius: 8 }} />
+                <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
+                  <span style={{ color: "var(--success)", fontSize: 13 }}>✅ Auto-captured!</span>
+                  {faceStatus !== "done" && (
+                    <button className="btn btn-sm" onClick={() => { setPhotoBlob(null); setPhotoUrl(null); }}>Retake</button>
+                  )}
+                </div>
+                {faceStatus === "encoding" && <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}>⏳ AI encoding...</p>}
+              </div>
+            ) : (
+              <FaceCapture onCapture={handleCapture} width={320} height={240} />
+            )}
           </div>
         </div>
       </main>
