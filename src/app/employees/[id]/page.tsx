@@ -11,6 +11,7 @@ function EditEmployeeContent({ employeeId }: { employeeId: string }) {
   const [form, setForm] = useState<any>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [loadTimeout, setLoadTimeout] = useState(false);
 
   useEffect(() => {
     if (!authLoading && !token) router.push("/login");
@@ -19,10 +20,13 @@ function EditEmployeeContent({ employeeId }: { employeeId: string }) {
   useEffect(() => {
     setForm(null);
     setError("");
+    setLoadTimeout(false);
+    const t = setTimeout(() => setLoadTimeout(true), 12000);
     if (token && employeeId) {
       fetch(`/api/employees/${employeeId}`, { headers: { Authorization: `Bearer ${token}` } })
         .then((r) => r.ok ? r.json() : null)
         .then((data) => {
+          clearTimeout(t);
           if (data) {
             const { salaryConfig, attendanceLogs, leaveBalances, leaveRequests, payrollRecords, ...rest } = data;
             setForm(rest);
@@ -30,8 +34,9 @@ function EditEmployeeContent({ employeeId }: { employeeId: string }) {
             setError("Employee not found");
           }
         })
-        .catch(() => setError("Failed to load employee"));
+        .catch(() => { clearTimeout(t); setError("Failed to load employee"); });
     }
+    return () => clearTimeout(t);
   }, [token, employeeId]);
 
   const set = (k: string, v: string) => setForm((f: any) => ({ ...f, [k]: v }));
@@ -59,8 +64,9 @@ function EditEmployeeContent({ employeeId }: { employeeId: string }) {
 
   if (authLoading) return <div className="loading-wrap"><div className="spinner" /></div>;
   if (!token) return null;
-  if (!form && !error) return <div className="loading-wrap"><div className="spinner" /></div>;
-  if (!form && error) return <div className="loading-wrap"><p style={{color:"red"}}>{error}</p></div>;
+  if (!form && !error && !loadTimeout) return <div className="loading-wrap"><div className="spinner" /></div>;
+  if (!form && loadTimeout) return <div className="loading-wrap"><p style={{color:"red"}}>Loading timed out. <Link href="/employees" style={{textDecoration:"underline"}}>← Back to list</Link></p><p style={{fontSize:12,color:"#888"}}>employeeId: {employeeId || "undefined"}</p></div>;
+  if (!form && error) return <div className="loading-wrap"><p style={{color:"red"}}>{error} <Link href="/employees" style={{textDecoration:"underline"}}>← Back to list</Link></p></div>;
 
   const fields = [
     { label: "First Name", key: "firstName", required: true },
