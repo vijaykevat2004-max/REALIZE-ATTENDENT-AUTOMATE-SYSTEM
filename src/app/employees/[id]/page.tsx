@@ -268,10 +268,16 @@ function FaceEnroll({ employeeId, token }: { employeeId: string; token: string |
   );
 }
 
-export default function Page({ params }: { params: { id: string } }) {
+function EditPageContent() {
+  const params = useParams();
+  const id = params.id as string;
+  return <EditEmployeeContent key={id} employeeId={id} />;
+}
+
+export default function Page() {
   return (
     <AuthProvider>
-      <EditEmployeeContent key={params.id} employeeId={params.id} />
+      <EditPageContent />
     </AuthProvider>
   );
 }
