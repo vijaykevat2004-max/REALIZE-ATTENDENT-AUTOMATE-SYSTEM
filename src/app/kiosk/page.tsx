@@ -3,7 +3,7 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import Sidebar from "@/components/Sidebar";
 import { AuthProvider, useAuth } from "@/components/AuthProvider";
 import { useRouter } from "next/navigation";
-import { encodeAllFacesFromVideo, getLoadingStatus } from "@/lib/face";
+import { encodeAllFaces, encodeAllFacesFromVideo, getLoadingStatus } from "@/lib/face";
 
 interface KioskEmployee {
   id: string; firstName: string; lastName: string; employeeCode: string; department: string; encoding: number[];
@@ -103,6 +103,15 @@ function KioskContent() {
     } catch (e) { pixelInfo = "px:ERROR"; }
     addDet({ time: new Date().toLocaleTimeString(), type: "check", message: `Test: canvas ${canvas.width}x${canvas.height} ${pixelInfo}...` });
     console.log(`🔍 TEST canvas ${canvas.width}x${canvas.height} pixel@center: ${pixelInfo}`);
+
+    // Also try with Image element (blob URL) - same as enrollment flow
+    let imgResult = "?";
+    try {
+      const blob = await (await fetch(dataUrl)).blob();
+      const imgEnc = await encodeAllFaces(blob);
+      imgResult = imgEnc.success ? `${imgEnc.encodings!.length} faces` : imgEnc.message!;
+    } catch (e: any) { imgResult = `err:${e.message}`; }
+
     const t0 = performance.now();
     const encData = await encodeAllFacesFromVideo(canvas);
     const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
@@ -110,8 +119,8 @@ function KioskContent() {
     const count = encData.encodings?.length || 0;
     const scores = encData.scores?.map(s => Math.round(s * 100)).join(", ") || "none";
     addDet({ time: new Date().toLocaleTimeString(), type: count > 0 ? "match" : "fail", faceCount: count,
-      message: `Test: ${count} face(s), dim=${dim}, scores=[${scores}], ${elapsed}s — ${encData.message || "ok"}` });
-    setDebugInfo(d => ({ ...d, lastResult: `${count} faces dim=${dim} in ${elapsed}s` }));
+      message: `Test: ${count} face(s) dim=${dim} scores=[${scores}] ${elapsed}s — ${encData.message || "ok"} | img:${imgResult}` });
+    setDebugInfo(d => ({ ...d, lastResult: `${count} faces dim=${dim} in ${elapsed}s img:${imgResult}` }));
   };
 
   useEffect(() => {
