@@ -5,11 +5,9 @@ import { AuthProvider, useAuth } from "@/components/AuthProvider";
 import { useRouter, useParams } from "next/navigation";
 import Link from "next/link";
 
-function EditEmployeeContent() {
+function EditEmployeeContent({ employeeId }: { employeeId: string }) {
   const { token, loading: authLoading } = useAuth();
   const router = useRouter();
-  const params = useParams();
-  const id = params.id as string;
   const [form, setForm] = useState<any>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -19,18 +17,22 @@ function EditEmployeeContent() {
   }, [authLoading, token, router]);
 
   useEffect(() => {
-    if (token && id) {
-      fetch(`/api/employees/${id}`, { headers: { Authorization: `Bearer ${token}` } })
+    setForm(null);
+    setError("");
+    if (token && employeeId) {
+      fetch(`/api/employees/${employeeId}`, { headers: { Authorization: `Bearer ${token}` } })
         .then((r) => r.ok ? r.json() : null)
         .then((data) => {
           if (data) {
             const { salaryConfig, attendanceLogs, leaveBalances, leaveRequests, payrollRecords, ...rest } = data;
             setForm(rest);
+          } else {
+            setError("Employee not found");
           }
         })
-        .catch(() => {});
+        .catch(() => setError("Failed to load employee"));
     }
-  }, [token, id]);
+  }, [token, employeeId]);
 
   const set = (k: string, v: string) => setForm((f: any) => ({ ...f, [k]: v }));
 
@@ -39,7 +41,7 @@ function EditEmployeeContent() {
     setSaving(true);
     setError("");
     try {
-      const res = await fetch(`/api/employees/${id}`, {
+      const res = await fetch(`/api/employees/${employeeId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify(form),
@@ -55,8 +57,10 @@ function EditEmployeeContent() {
     setSaving(false);
   };
 
-  if (authLoading || !form) return <div className="loading-wrap"><div className="spinner" /></div>;
+  if (authLoading) return <div className="loading-wrap"><div className="spinner" /></div>;
   if (!token) return null;
+  if (!form && !error) return <div className="loading-wrap"><div className="spinner" /></div>;
+  if (!form && error) return <div className="loading-wrap"><p style={{color:"red"}}>{error}</p></div>;
 
   const fields = [
     { label: "First Name", key: "firstName", required: true },
@@ -118,7 +122,7 @@ function EditEmployeeContent() {
               </button>
               <button type="button" className="btn btn-danger" onClick={async () => {
                 if (!confirm("Deactivate this employee?")) return;
-                await fetch(`/api/employees/${id}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
+                await fetch(`/api/employees/${employeeId}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
                 router.push("/employees");
               }}>Deactivate</button>
             </div>
@@ -127,7 +131,7 @@ function EditEmployeeContent() {
 
         <div className="card" style={{ marginTop: 16 }}>
           <h3 style={{ marginBottom: 12, fontSize: 15 }}>Face Enrollment</h3>
-          <FaceEnroll employeeId={id} token={token} />
+          <FaceEnroll employeeId={employeeId} token={token} />
         </div>
       </main>
     </div>
@@ -264,6 +268,10 @@ function FaceEnroll({ employeeId, token }: { employeeId: string; token: string |
   );
 }
 
-export default function Page() {
-  return <AuthProvider><EditEmployeeContent /></AuthProvider>;
+export default function Page({ params }: { params: { id: string } }) {
+  return (
+    <AuthProvider>
+      <EditEmployeeContent key={params.id} employeeId={params.id} />
+    </AuthProvider>
+  );
 }

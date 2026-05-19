@@ -28,7 +28,7 @@ interface DetectionInfo {
 }
 
 const AI_URL = "https://hrms-ai-abv8.onrender.com";
-const MATCH_THRESHOLD = 0.75;
+const MATCH_THRESHOLD = 0.65;
 const MARK_COOLDOWN = 15000;
 const CAPTURE_INTERVAL = 2000;
 const MOTION_THRESHOLD = 4;
@@ -36,6 +36,7 @@ const MOTION_FRAME_W = 80;
 const MOTION_FRAME_H = 60;
 
 function computeDistance(a: number[], b: number[]): number {
+  if (a.length !== b.length) return Infinity;
   let sum = 0;
   for (let i = 0; i < a.length; i++) sum += (a[i] - b[i]) ** 2;
   return Math.sqrt(sum);
@@ -211,6 +212,10 @@ function KioskContent() {
           continue;
         }
         const emp = known[bestIdx];
+        if (bestDist === Infinity) {
+          addDet({ time: checkTime, type: "fail", message: `Dimension mismatch: AI returned ${target.length}-dim, enrolled face is ${emp.encoding.length}-dim. Re-enroll face.` });
+          continue;
+        }
         const dist = Math.round(bestDist * 1000) / 1000;
         const conf = Math.round((1 / (1 + bestDist)) * 100);
         if (bestDist > MATCH_THRESHOLD) {
