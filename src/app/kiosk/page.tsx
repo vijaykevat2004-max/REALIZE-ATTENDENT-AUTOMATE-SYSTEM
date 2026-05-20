@@ -336,45 +336,6 @@ function KioskContent() {
           addDet({ time: checkTime, type: "info", faceCount, empName: `${emp.firstName} ${emp.lastName}`, distance: sim, confidence: conf, message: `🔄 Frame ${recent.length}/${CONSENSUS_FRAMES} — ${emp.firstName} (${conf}%)` });
         }
       }
-          const s = computeSimilarity(known[i].encoding, target);
-          if (s > bestSim) { bestSim = s; bestIdx = i; }
-        }
-        if (bestIdx === -1) {
-          addDet({ time: checkTime, type: "fail", message: "No matching embeddings (dimension mismatch — re-enroll faces)" });
-          continue;
-        }
-        const emp = known[bestIdx];
-        const sim = Math.round(bestSim * 1000) / 1000;
-        const conf = Math.round(bestSim * 100);
-        // STRICT cosine similarity check (ArcFace: >0.4 = same person)
-        if (bestSim < SIMILARITY_THRESHOLD) {
-          addDet({ time: checkTime, type: "fail", empName: `${emp.firstName} ${emp.lastName}`, distance: sim, confidence: conf, message: `❌ ${emp.firstName} — similarity ${conf}% < ${Math.round(SIMILARITY_THRESHOLD * 100)}% (REJECTED — not you)` });
-          setDebugOverlay(d => ({ ...d, status: "rejected", error: `sim ${conf}% < threshold` }));
-          continue;
-        }
-        const last = lastMarkedRef.current[emp.id] || 0;
-        if (now - last < MARK_COOLDOWN) {
-          addDet({ time: checkTime, type: "info", faceCount, empName: `${emp.firstName} ${emp.lastName}`, distance: sim, confidence: conf, message: `⏳ ${emp.firstName} — cooldown` });
-          continue;
-        }
-        lastMarkedRef.current[emp.id] = now;
-        setDebugOverlay(d => ({ ...d, status: `✅ ${emp.firstName}`, error: "" }));
-        addDet({ time: checkTime, type: "match", empName: `${emp.firstName} ${emp.lastName}`, distance: sim, confidence: conf, message: `✅ ${emp.firstName} ${emp.lastName} (sim: ${conf}%)` });
-        const photoUrl = canvas.toDataURL("image/jpeg", 0.92);
-        const markRes = await fetch("/api/attendance/face-mark", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ employeeId: emp.id, photoUrl }),
-        });
-        if (markRes.ok) {
-          const result = await markRes.json();
-          addDet({ time: checkTime, type: "mark", empName: result.employeeName, message: `✅ ${result.employeeName} ${result.type === "CHECK_IN" ? "CHECKED IN" : "CHECKED OUT"} at ${result.time}` });
-          if (announceEnabled) speak(`${result.type === "CHECK_IN" ? "Good morning" : "Goodbye"}, ${emp.firstName}`);
-          fetchSheet();
-        } else {
-          addDet({ time: checkTime, type: "fail", empName: `${emp.firstName} ${emp.lastName}`, message: `❌ Mark failed: ${(await markRes.json().catch(() => ({}))).error || markRes.status}` });
-        }
-      }
     } catch (e: any) {
       const msg = e.message || "unknown error";
       console.log(`❌ capture error: ${msg}`);
