@@ -32,3 +32,19 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: e.message }, { status: 400 });
   }
 }
+export async function DELETE(req: NextRequest) {
+  try {
+    const { searchParams } = new URL(req.url);
+    const all = searchParams.get("all");
+    if (all === "true") {
+      // Delete all employees and their related records
+      await prisma.faceDetectionLog.deleteMany();
+      await prisma.attendanceLog.deleteMany();
+      await prisma.employee.deleteMany();
+      return NextResponse.json({ success: true, message: "All employees deleted" });
+    }
+    return NextResponse.json({ error: "Specify ?all=true to delete all" }, { status: 400 });
+  } catch (e: any) {
+    return NextResponse.json({ error: e.message }, { status: 500 });
+  }
+}
