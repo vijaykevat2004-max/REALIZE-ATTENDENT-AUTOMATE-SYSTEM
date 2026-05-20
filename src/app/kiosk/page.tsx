@@ -29,7 +29,7 @@ interface DetectionInfo {
   message: string;
 }
 
-const MATCH_THRESHOLD = 0.35;
+const SIMILARITY_THRESHOLD = 0.4;
 const MIN_CONFIDENCE = 90;
 const MIN_FACE_SIZE = 80;
 const MARK_COOLDOWN = 15000;
@@ -38,15 +38,16 @@ const MOTION_THRESHOLD = 4;
 const MOTION_FRAME_W = 80;
 const MOTION_FRAME_H = 60;
 
-function computeDistance(a: number[], b: number[]): number {
-  if (!a || !b || a.length === 0 || b.length === 0) return Infinity;
-  if (a.length !== b.length) return Infinity;
-  let sum = 0;
+function computeSimilarity(a: number[], b: number[]): number {
+  if (!a || !b || a.length === 0 || b.length === 0) return 0;
+  if (a.length !== b.length) return -1;
+  let dot = 0, normA = 0, normB = 0;
   for (let i = 0; i < a.length; i++) {
-    const d = (a[i] || 0) - (b[i] || 0);
-    sum += d * d;
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
   }
-  return Math.sqrt(sum);
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB) + 1e-8);
 }
 
 function speak(text: string) {
@@ -263,57 +264,41 @@ function KioskContent() {
         setDebugOverlay(d => ({ ...d, status: "no face", error: encData.message || "No face" }));
         return;
       }
-      // Quality gate: reject blurry/dark faces
-      const q = encData.quality;
-      if (q && (q.blurry || q.dark)) {
-        addDet({ time: checkTime, type: "fail", message: `Poor quality: blur=${q.blur_score}, bright=${q.brightness}` });
-        return;
-      }
-      // Detection confidence gate
-      if (detConf < 0.8) {
+      // Detection confidence gate (InsightFace det_score)
+      if (detConf < 0.5) {
         addDet({ time: checkTime, type: "fail", message: `Low detection confidence: ${(detConf * 100).toFixed(0)}%` });
         return;
       }
       const now = Date.now();
       for (let fi = 0; fi < encData.encodings.length; fi++) {
         const target = encData.encodings[fi];
-        let bestIdx = -1, bestDist = Infinity;
+        let bestIdx = -1, bestSim = -1;
         for (let i = 0; i < known.length; i++) {
-          const d = computeDistance(known[i].encoding, target);
-          if (d < bestDist) { bestDist = d; bestIdx = i; }
+          if (known[i].encoding.length !== target.length) continue;
+          const s = computeSimilarity(known[i].encoding, target);
+          if (s > bestSim) { bestSim = s; bestIdx = i; }
         }
         if (bestIdx === -1) {
           addDet({ time: checkTime, type: "fail", message: "No enrolled faces to match against" });
           continue;
         }
         const emp = known[bestIdx];
-        if (bestDist === Infinity) {
-          const msg = `Dimension mismatch: ${target.length}-dim vs enrolled ${emp.encoding.length}-dim. Re-enroll face.`;
-          addDet({ time: checkTime, type: "fail", message: msg });
-          setDebugOverlay(d => ({ ...d, status: "dim mismatch", error: msg }));
-          continue;
-        }
-        const dist = Math.round(bestDist * 1000) / 1000;
-        const conf = Math.round((1 / (1 + bestDist)) * 100);
-        // STRICT threshold check
-        if (bestDist > MATCH_THRESHOLD) {
-          addDet({ time: checkTime, type: "fail", empName: `${emp.firstName} ${emp.lastName}`, distance: dist, confidence: conf, message: `❌ ${emp.firstName} — distance ${dist} > ${MATCH_THRESHOLD} (REJECTED)` });
-          setDebugOverlay(d => ({ ...d, status: "rejected", error: `dist ${dist} > ${MATCH_THRESHOLD}` }));
-          continue;
-        }
-        // Confidence gate
-        if (conf < MIN_CONFIDENCE) {
-          addDet({ time: checkTime, type: "fail", empName: `${emp.firstName} ${emp.lastName}`, distance: dist, confidence: conf, message: `❌ ${emp.firstName} — conf ${conf}% < ${MIN_CONFIDENCE}% (REJECTED)` });
+        const sim = Math.round(bestSim * 1000) / 1000;
+        const conf = Math.round(bestSim * 100);
+        // STRICT cosine similarity check (ArcFace: >0.4 = same person)
+        if (bestSim < SIMILARITY_THRESHOLD) {
+          addDet({ time: checkTime, type: "fail", empName: `${emp.firstName} ${emp.lastName}`, distance: sim, confidence: conf, message: `❌ ${emp.firstName} — similarity ${conf}% < ${Math.round(SIMILARITY_THRESHOLD * 100)}% (REJECTED — not you)` });
+          setDebugOverlay(d => ({ ...d, status: "rejected", error: `sim ${conf}% < threshold` }));
           continue;
         }
         const last = lastMarkedRef.current[emp.id] || 0;
         if (now - last < MARK_COOLDOWN) {
-          addDet({ time: checkTime, type: "info", faceCount, empName: `${emp.firstName} ${emp.lastName}`, distance: dist, confidence: conf, message: `⏳ ${emp.firstName} — cooldown (${Math.ceil((MARK_COOLDOWN - (now - last)) / 1000)}s)` });
+          addDet({ time: checkTime, type: "info", faceCount, empName: `${emp.firstName} ${emp.lastName}`, distance: sim, confidence: conf, message: `⏳ ${emp.firstName} — cooldown` });
           continue;
         }
         lastMarkedRef.current[emp.id] = now;
         setDebugOverlay(d => ({ ...d, status: `✅ ${emp.firstName}`, error: "" }));
-        addDet({ time: checkTime, type: "match", empName: `${emp.firstName} ${emp.lastName}`, distance: dist, confidence: conf, message: `✅ ${emp.firstName} ${emp.lastName} (dist: ${dist}, conf: ${conf}%)` });
+        addDet({ time: checkTime, type: "match", empName: `${emp.firstName} ${emp.lastName}`, distance: sim, confidence: conf, message: `✅ ${emp.firstName} ${emp.lastName} (sim: ${conf}%)` });
         const photoUrl = canvas.toDataURL("image/jpeg", 0.92);
         const markRes = await fetch("/api/attendance/face-mark", {
           method: "POST",
