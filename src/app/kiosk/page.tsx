@@ -29,7 +29,7 @@ interface DetectionInfo {
   message: string;
 }
 
-const SIMILARITY_THRESHOLD = 0.80;
+const SIMILARITY_THRESHOLD = 0.90;
 const MIN_CONFIDENCE = 90;
 const MIN_FACE_SIZE = 80;
 const MARK_COOLDOWN = 15000;
@@ -38,7 +38,7 @@ const MOTION_THRESHOLD = 3;
 const MOTION_FRAME_W = 80;
 const MOTION_FRAME_H = 60;
 const CONSENSUS_FRAMES = 3;
-const CONSENSUS_AVG_THRESHOLD = 0.82;
+const CONSENSUS_AVG_THRESHOLD = 0.92;
 const MARGIN_THRESHOLD = 0.10;
 
 function computeSimilarity(a: number[], b: number[]): number {
@@ -85,6 +85,7 @@ function KioskContent() {
   const [capturedPreview, setCapturedPreview] = useState<string | null>(null);
   const [debugInfo, setDebugInfo] = useState({ models: "", employees: "", lastCapture: "", lastResult: "" });
   const verificationBufferRef = useRef<{ employeeId: string; similarity: number; timestamp: number }[]>([]);
+  const [liveScores, setLiveScores] = useState<{ name: string; sim: number }[]>([]);
 
   const addDet = (d: DetectionInfo) => {
     setDetections((prev) => [d, ...prev].slice(0, 100));
@@ -294,6 +295,7 @@ function KioskContent() {
           if (e.encoding.length !== target.length) return null;
           return { name: `${e.firstName} ${e.lastName}`, sim: Math.round(computeSimilarity(e.encoding, target) * 100) };
         }).filter(Boolean).sort((a: any, b: any) => b.sim - a.sim);
+        setLiveScores(allScores.slice(0, 5));
         console.log('🔍 ALL SCORES:', JSON.stringify(allScores.slice(0, 5)));
         if (bestSim < SIMILARITY_THRESHOLD) {
           verificationBufferRef.current = [];
@@ -519,6 +521,17 @@ function KioskContent() {
                 )}
                 {capturedPreview && (
                   <img src={capturedPreview} alt="captured frame" style={{ position: "absolute", bottom: 60, right: 8, width: 120, border: "2px solid #fff", borderRadius: 4 }} />
+                )}
+                {liveScores.length > 0 && (
+                  <div style={{ position: "absolute", bottom: 8, left: 8, background: "rgba(0,0,0,0.85)", color: "#fff", padding: "8px 12px", borderRadius: 6, fontSize: 12, fontFamily: "monospace" }}>
+                    <div style={{ fontWeight: 600, marginBottom: 4, color: "#94a3b8" }}>LIVE SCORES</div>
+                    {liveScores.map((s, i) => (
+                      <div key={i} style={{ color: s.sim >= 90 ? "#22c55e" : s.sim >= 70 ? "#f59e0b" : "#ef4444" }}>
+                        {s.name}: {s.sim}%
+                      </div>
+                    ))}
+                    <div style={{ marginTop: 4, color: "#64748b", fontSize: 10 }}>Threshold: {Math.round(SIMILARITY_THRESHOLD * 100)}%</div>
+                  </div>
                 )}
               </div>
             </div>
