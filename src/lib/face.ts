@@ -28,11 +28,11 @@ export async function encodeAllFacesFromVideo(source: HTMLVideoElement | HTMLCan
     canvas.height = source.videoHeight || 480;
     canvas.getContext("2d")!.drawImage(source, 0, 0);
   }
-  return new Promise<{ success: boolean; encodings?: FaceEncoding[]; message?: string; quality?: any }>((resolve) => {
+  return new Promise<{ success: boolean; encodings?: FaceEncoding[]; message?: string; quality?: any; confidence?: number }>((resolve) => {
     canvas.toBlob(async (blob) => {
       if (!blob || blob.size === 0) return resolve({ success: false, message: "No frame" });
       const r = await aiEncode(blob);
-      resolve({ success: r.success, encodings: r.encodings, message: r.message });
+      resolve({ success: r.success, encodings: r.encodings, message: r.message, quality: r.quality, confidence: r.confidence });
     }, "image/jpeg", 0.92);
   });
 }

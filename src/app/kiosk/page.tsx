@@ -29,7 +29,9 @@ interface DetectionInfo {
   message: string;
 }
 
-const MATCH_THRESHOLD = 0.7;
+const MATCH_THRESHOLD = 0.35;
+const MIN_CONFIDENCE = 90;
+const MIN_FACE_SIZE = 80;
 const MARK_COOLDOWN = 15000;
 const CAPTURE_INTERVAL = 2000;
 const MOTION_THRESHOLD = 4;
@@ -253,12 +255,23 @@ function KioskContent() {
       const encData = await encodeAllFacesFromVideo(canvas);
       const faceCount = encData.encodings?.length || 0;
       const dims = encData.encodings?.[0]?.length || 0;
-      const maxScore = encData.encodings?.length ? 85 : 0;
+      const detConf = encData.confidence || 0;
       setDebugOverlay(d => ({ ...d, status: "detecting", faces: faceCount, dims, error: encData.success ? "" : (encData.message || "") }));
-      addDet({ time: checkTime, type: "check", faceCount, message: `Detected ${faceCount} face(s) (confidence: ${maxScore}%, dim: ${dims})` });
+      addDet({ time: checkTime, type: "check", faceCount, message: `Detected ${faceCount} face(s) (det conf: ${(detConf * 100).toFixed(0)}%, dim: ${dims})` });
       console.log(`🤖 AI service: faces=${faceCount}, dim=${dims}`);      if (!encData.success || !encData.encodings?.length) {
         addDet({ time: checkTime, type: "fail", faceCount: 0, message: encData.message || "No face detected" });
         setDebugOverlay(d => ({ ...d, status: "no face", error: encData.message || "No face" }));
+        return;
+      }
+      // Quality gate: reject blurry/dark faces
+      const q = encData.quality;
+      if (q && (q.blurry || q.dark)) {
+        addDet({ time: checkTime, type: "fail", message: `Poor quality: blur=${q.blur_score}, bright=${q.brightness}` });
+        return;
+      }
+      // Detection confidence gate
+      if (detConf < 0.8) {
+        addDet({ time: checkTime, type: "fail", message: `Low detection confidence: ${(detConf * 100).toFixed(0)}%` });
         return;
       }
       const now = Date.now();
@@ -275,25 +288,31 @@ function KioskContent() {
         }
         const emp = known[bestIdx];
         if (bestDist === Infinity) {
-          const msg = `Dimension mismatch: face-api ${target.length}-dim vs enrolled ${emp.encoding.length}-dim. Re-enroll face.`;
+          const msg = `Dimension mismatch: ${target.length}-dim vs enrolled ${emp.encoding.length}-dim. Re-enroll face.`;
           addDet({ time: checkTime, type: "fail", message: msg });
           setDebugOverlay(d => ({ ...d, status: "dim mismatch", error: msg }));
           continue;
         }
         const dist = Math.round(bestDist * 1000) / 1000;
         const conf = Math.round((1 / (1 + bestDist)) * 100);
+        // STRICT threshold check
         if (bestDist > MATCH_THRESHOLD) {
-          addDet({ time: checkTime, type: "fail", empName: `${emp.firstName} ${emp.lastName}`, distance: dist, confidence: conf, message: `Match ${emp.firstName} ${emp.lastName} — distance ${dist} > threshold ${MATCH_THRESHOLD}` });
-          setDebugOverlay(d => ({ ...d, status: "no match", error: `dist ${dist} > ${MATCH_THRESHOLD}` }));
+          addDet({ time: checkTime, type: "fail", empName: `${emp.firstName} ${emp.lastName}`, distance: dist, confidence: conf, message: `❌ ${emp.firstName} — distance ${dist} > ${MATCH_THRESHOLD} (REJECTED)` });
+          setDebugOverlay(d => ({ ...d, status: "rejected", error: `dist ${dist} > ${MATCH_THRESHOLD}` }));
+          continue;
+        }
+        // Confidence gate
+        if (conf < MIN_CONFIDENCE) {
+          addDet({ time: checkTime, type: "fail", empName: `${emp.firstName} ${emp.lastName}`, distance: dist, confidence: conf, message: `❌ ${emp.firstName} — conf ${conf}% < ${MIN_CONFIDENCE}% (REJECTED)` });
           continue;
         }
         const last = lastMarkedRef.current[emp.id] || 0;
         if (now - last < MARK_COOLDOWN) {
-          addDet({ time: checkTime, type: "info", faceCount, empName: `${emp.firstName} ${emp.lastName}`, distance: dist, confidence: conf, message: `⏳ ${emp.firstName} ${emp.lastName} — cooldown (${Math.ceil((MARK_COOLDOWN - (now - last)) / 1000)}s)` });
+          addDet({ time: checkTime, type: "info", faceCount, empName: `${emp.firstName} ${emp.lastName}`, distance: dist, confidence: conf, message: `⏳ ${emp.firstName} — cooldown (${Math.ceil((MARK_COOLDOWN - (now - last)) / 1000)}s)` });
           continue;
         }
         lastMarkedRef.current[emp.id] = now;
-        setDebugOverlay(d => ({ ...d, status: `matched ${emp.firstName} ${emp.lastName}`, error: "" }));
+        setDebugOverlay(d => ({ ...d, status: `✅ ${emp.firstName}`, error: "" }));
         addDet({ time: checkTime, type: "match", empName: `${emp.firstName} ${emp.lastName}`, distance: dist, confidence: conf, message: `✅ ${emp.firstName} ${emp.lastName} (dist: ${dist}, conf: ${conf}%)` });
         const photoUrl = canvas.toDataURL("image/jpeg", 0.92);
         const markRes = await fetch("/api/attendance/face-mark", {

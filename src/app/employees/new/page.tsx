@@ -33,6 +33,9 @@ function EmployeeForm() {
       setFaceStatus("encoding");
       const enc = await encodeFace(blob);
       if (!enc.success || !enc.encodings?.length) throw new Error(enc.message || "No face detected");
+      if (enc.quality && !enc.quality.good_quality) {
+        throw new Error(`Face quality too low. ${enc.quality.blurry ? "Image is blurry." : ""} Look directly at camera in good lighting.`);
+      }
       const today = new Date().toISOString().split("T")[0];
       const res = await fetch("/api/employees", {
         method: "POST",
