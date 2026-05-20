@@ -3,7 +3,7 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import Sidebar from "@/components/Sidebar";
 import { AuthProvider, useAuth } from "@/components/AuthProvider";
 import { useRouter } from "next/navigation";
-import { encodeAllFacesFromVideo } from "@/lib/face";
+import { encodeAllFacesFromVideo, matchFaceServer, type MatchDecision } from "@/lib/face";
 import { aiWarmUp } from "@/lib/aiService";
 
 interface KioskEmployee {
@@ -17,41 +17,21 @@ interface FaceLog {
 
 interface DetectionInfo {
   time: string;
-  type: "check" | "match" | "mark" | "fail" | "info";
+  type: "check" | "match" | "mark" | "fail" | "info" | "review";
   empName?: string;
   empCode?: string;
   empDept?: string;
-  distance?: number;
   confidence?: number;
   faceCount?: number;
-  matchedIndex?: number;
-  knownCount?: number;
   message: string;
 }
 
-const SIMILARITY_THRESHOLD = 0.85;
-const MIN_CONFIDENCE = 90;
-const MIN_FACE_SIZE = 80;
 const MARK_COOLDOWN = 15000;
 const CAPTURE_INTERVAL = 1000;
 const MOTION_THRESHOLD = 3;
 const MOTION_FRAME_W = 80;
 const MOTION_FRAME_H = 60;
-const CONSENSUS_FRAMES = 5;
-const CONSENSUS_AVG_THRESHOLD = 0.87;
-const MARGIN_THRESHOLD = 0.15;
-
-function computeSimilarity(a: number[], b: number[]): number {
-  if (!a || !b || a.length === 0 || b.length === 0) return 0;
-  if (a.length !== b.length) return -1;
-  let dot = 0, normA = 0, normB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
-  }
-  return dot / (Math.sqrt(normA) * Math.sqrt(normB) + 1e-8);
-}
+const SESSION_ID = `kiosk_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
 function speak(text: string) {
   if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
@@ -84,8 +64,9 @@ function KioskContent() {
   const [debugOverlay, setDebugOverlay] = useState({ status: "initializing", faces: 0, dims: 0, error: "", lastOk: "" });
   const [capturedPreview, setCapturedPreview] = useState<string | null>(null);
   const [debugInfo, setDebugInfo] = useState({ models: "", employees: "", lastCapture: "", lastResult: "" });
-  const verificationBufferRef = useRef<{ employeeId: string; similarity: number; timestamp: number }[]>([]);
   const [liveScores, setLiveScores] = useState<{ name: string; sim: number }[]>([]);
+  const [lastClassification, setLastClassification] = useState<string | null>(null);
+  const [lastMatchDetails, setLastMatchDetails] = useState<{ score: number; threshold: string } | null>(null);
 
   const addDet = (d: DetectionInfo) => {
     setDetections((prev) => [d, ...prev].slice(0, 100));
@@ -116,8 +97,9 @@ function KioskContent() {
     const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
     const dim = encData.encodings?.[0]?.length || 0;
     const count = encData.encodings?.length || 0;
+    const qualityInfo = encData.quality ? `quality=${encData.quality.score.toFixed(2)}` : "no quality";
     addDet({ time: new Date().toLocaleTimeString(), type: count > 0 ? "match" : "fail", faceCount: count,
-      message: `AI: ${count} face(s) dim=${dim} in ${elapsed}s — ${encData.message || "ok"}` });
+      message: `AI: ${count} face(s) dim=${dim} in ${elapsed}s — ${encData.message || "ok"} (${qualityInfo})` });
     setDebugInfo(d => ({ ...d, lastResult: `${count} faces dim=${dim} in ${elapsed}s` }));
   };
 
@@ -195,7 +177,7 @@ function KioskContent() {
       prevFrameRef.current = null;
       setActive(true);
       setDetections([]);
-      addDet({ time: new Date().toLocaleTimeString(), type: "info", message: "Kiosk started" });
+      addDet({ time: new Date().toLocaleTimeString(), type: "info", message: "Kiosk started (server-side matching v10.0)" });
       aiWarmUp().then(ok => {
         if (ok) { setModelReady(true); addDet({ time: new Date().toLocaleTimeString(), type: "info", message: "AI service connected" }); }
         else { addDet({ time: new Date().toLocaleTimeString(), type: "info", message: "AI service warming up (slow first request)" }); }
@@ -235,141 +217,145 @@ function KioskContent() {
     const video = videoRef.current;
     const canvas = canvasRef.current;
     if (!video || !canvas || !token || known.length === 0) return;
-    if (!video.videoWidth || !video.videoHeight) {
-      console.log("⏳ Video not ready yet (dimensions 0)");
-      return;
-    }
-    if (capturingRef.current) { console.log("⏳ Already capturing, skipping"); return; }
+    if (!video.videoWidth || !video.videoHeight) return;
+    if (capturingRef.current) return;
     capturingRef.current = true;
-    const safetyTimer = setTimeout(() => { capturingRef.current = false; console.log("⚠️ Safety reset capturingRef"); }, 10000);
+    const safetyTimer = setTimeout(() => { capturingRef.current = false; }, 10000);
     let checkTime = "";
-    let frameDataUrl = "";
     setDebugOverlay(d => ({ ...d, status: "capturing..." }));
-    console.log(`📸 captureAndRecognize called (force=${force}), known=${known.length}`);
     try {
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
       canvas.width = video.videoWidth || 640;
       canvas.height = video.videoHeight || 480;
       ctx.drawImage(video, 0, 0);
-      console.log(`📹 Video dims: ${video.videoWidth}x${video.videoHeight}, canvas: ${canvas.width}x${canvas.height}`);
       checkTime = new Date().toLocaleTimeString();
       setDebugOverlay(d => ({ ...d, lastOk: `${canvas.width}x${canvas.height} @ ${checkTime}` }));
-      console.log(`🔍 Detecting faces from canvas (${canvas.width}x${canvas.height})...`);
       addDet({ time: checkTime, type: "check", message: "Detecting faces..." });
+
       const encData = await encodeAllFacesFromVideo(canvas);
       const faceCount = encData.encodings?.length || 0;
       const dims = encData.encodings?.[0]?.length || 0;
       const detConf = encData.confidence || 0;
+      const quality = encData.quality;
+
       setDebugOverlay(d => ({ ...d, status: "detecting", faces: faceCount, dims, error: encData.success ? "" : (encData.message || "") }));
-      addDet({ time: checkTime, type: "check", faceCount, message: `Detected ${faceCount} face(s) (det conf: ${(detConf * 100).toFixed(0)}%, dim: ${dims})` });
-      console.log(`🤖 AI service: faces=${faceCount}, dim=${dims}`);      if (!encData.success || !encData.encodings?.length) {
+      addDet({ time: checkTime, type: "check", faceCount,
+        message: `Detected ${faceCount} face(s) (det conf: ${(detConf * 100).toFixed(0)}%, dim: ${dims}, quality: ${quality?.score?.toFixed(2) || "N/A"})` });
+
+      if (!encData.success || !encData.encodings?.length) {
         addDet({ time: checkTime, type: "fail", faceCount: 0, message: encData.message || "No face detected" });
         setDebugOverlay(d => ({ ...d, status: "no face", error: encData.message || "No face" }));
         return;
       }
-      // Detection confidence gate (InsightFace det_score)
+
       if (detConf < 0.5) {
         addDet({ time: checkTime, type: "fail", message: `Low detection confidence: ${(detConf * 100).toFixed(0)}%` });
         return;
       }
-      const now = Date.now();
-      for (let fi = 0; fi < encData.encodings.length; fi++) {
-        const target = encData.encodings[fi];
-        let bestIdx = -1, bestSim = -1, secondSim = 0;
-        for (let i = 0; i < known.length; i++) {
-          if (known[i].encoding.length !== target.length) continue;
-          const s = computeSimilarity(known[i].encoding, target);
-          if (s > bestSim) { secondSim = bestSim; bestSim = s; bestIdx = i; }
-          else if (s > secondSim) { secondSim = s; }
+
+      const qualityScore = quality?.score ?? 1.0;
+      if (quality && !quality.good_quality) {
+        const issueList = quality.issues.join(", ");
+        addDet({ time: checkTime, type: "fail", message: `Quality gate failed (${qualityScore.toFixed(2)}): ${issueList}` });
+        setDebugOverlay(d => ({ ...d, status: "quality fail", error: issueList }));
+        return;
+      }
+
+      const targetEmbedding = encData.encodings[0];
+      const knownEmployees = known.map(e => ({
+        id: e.id,
+        name: `${e.firstName} ${e.lastName}`,
+        encoding: e.encoding,
+      }));
+
+      const matchStart = performance.now();
+      const decision: MatchDecision = await matchFaceServer({
+        targetEmbedding,
+        qualityScore,
+        sessionId: SESSION_ID,
+        knownEmployees,
+      });
+      const matchElapsed = ((performance.now() - matchStart) / 1000).toFixed(2);
+
+      setLastClassification(decision.classification);
+      setLastMatchDetails({
+        score: decision.confidenceScore,
+        threshold: decision.classification === "CONFIRMED" ? "confirmed" : decision.classification === "REVIEW" ? "review" : "reject",
+      });
+
+      if (decision.topScores.length > 0) {
+        setLiveScores(decision.topScores.map(s => ({ name: s.name, sim: Math.round(s.similarity * 100) })));
+      }
+
+      if (decision.classification === "CONFIRMED" && decision.employeeId) {
+        const emp = known.find(e => e.id === decision.employeeId);
+        if (!emp) return;
+
+        const now = Date.now();
+        const last = lastMarkedRef.current[emp.id] || 0;
+        if (now - last < MARK_COOLDOWN) {
+          addDet({ time: checkTime, type: "info", faceCount,
+            empName: `${emp.firstName} ${emp.lastName}`,
+            confidence: Math.round(decision.confidenceScore * 100),
+            message: `⏳ ${emp.firstName} — cooldown (${decision.temporalFrameCount} frames verified)` });
+          return;
         }
-        if (bestIdx === -1) {
-          addDet({ time: checkTime, type: "fail", message: "No matching embeddings (dimension mismatch — re-enroll faces)" });
-          continue;
-        }
-        const emp = known[bestIdx];
-        const sim = Math.round(bestSim * 1000) / 1000;
-        const conf = Math.round(bestSim * 100);
-        const margin = Math.round((bestSim - secondSim) * 1000) / 1000;
-        const allScores = known.map((e, i) => {
-          if (e.encoding.length !== target.length) return null;
-          return { name: `${e.firstName} ${e.lastName}`, sim: Math.round(computeSimilarity(e.encoding, target) * 100) };
-        }).filter(Boolean).sort((a: any, b: any) => b.sim - a.sim);
-        setLiveScores(allScores.slice(0, 5));
-        console.log('🔍 SCORES:', JSON.stringify(allScores.slice(0, 5)));
-        if (bestSim < SIMILARITY_THRESHOLD) {
-          verificationBufferRef.current = [];
-          addDet({ time: checkTime, type: "fail", empName: "UNKNOWN FACE", distance: sim, confidence: conf, message: `❌ UNKNOWN FACE — best match ${conf}% < ${Math.round(SIMILARITY_THRESHOLD * 100)}% threshold` });
-          setDebugOverlay(d => ({ ...d, status: "❌ UNKNOWN", error: `sim ${conf}% < threshold ${Math.round(SIMILARITY_THRESHOLD * 100)}%` }));
-          continue;
-        }
-        if (known.length > 1 && margin < MARGIN_THRESHOLD) {
-          verificationBufferRef.current = [];
-          addDet({ time: checkTime, type: "fail", empName: `${emp.firstName}`, distance: sim, confidence: conf, message: `❌ AMBIGUOUS — margin ${Math.round(margin * 100)}% < ${Math.round(MARGIN_THRESHOLD * 100)}%` });
-          setDebugOverlay(d => ({ ...d, status: "ambiguous", error: `margin too small` }));
-          continue;
-        }
-        verificationBufferRef.current.push({ employeeId: emp.id, similarity: bestSim, timestamp: now });
-        const cutoff = now - 8000;
-        verificationBufferRef.current = verificationBufferRef.current.filter(f => f.timestamp > cutoff);
-        const recent = verificationBufferRef.current.slice(-CONSENSUS_FRAMES);
-        if (recent.length >= CONSENSUS_FRAMES) {
-          const allSamePerson = recent.every(f => f.employeeId === emp.id);
-          const avgSim = recent.reduce((sum, f) => sum + f.similarity, 0) / recent.length;
-          const allAboveThreshold = recent.every(f => f.similarity >= SIMILARITY_THRESHOLD);
-          if (allSamePerson && allAboveThreshold && avgSim >= CONSENSUS_AVG_THRESHOLD) {
-            const last = lastMarkedRef.current[emp.id] || 0;
-            if (now - last < MARK_COOLDOWN) {
-              addDet({ time: checkTime, type: "info", faceCount, empName: `${emp.firstName} ${emp.lastName}`, distance: sim, confidence: conf, message: `⏳ ${emp.firstName} — cooldown (${CONSENSUS_FRAMES}/${CONSENSUS_FRAMES} verified)` });
-              verificationBufferRef.current = [];
-              continue;
-            }
-            lastMarkedRef.current[emp.id] = now;
-            verificationBufferRef.current = [];
-            setDebugOverlay(d => ({ ...d, status: `✅ ${emp.firstName}`, error: "" }));
-            addDet({ time: checkTime, type: "match", empName: `${emp.firstName} ${emp.lastName}`, distance: sim, confidence: conf, message: `✅ VERIFIED ${CONSENSUS_FRAMES}/${CONSENSUS_FRAMES} frames — ${emp.firstName} ${emp.lastName} (avg sim: ${(avgSim * 100).toFixed(1)}%)` });
-            const photoUrl = canvas.toDataURL("image/jpeg", 0.92);
-            const markRes = await fetch("/api/attendance/face-mark", {
-              method: "POST",
-              headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-              body: JSON.stringify({ employeeId: emp.id, photoUrl }),
-            });
-            if (markRes.ok) {
-              const result = await markRes.json();
-              addDet({ time: checkTime, type: "mark", empName: result.employeeName, message: `✅ ${result.employeeName} ${result.type === "CHECK_IN" ? "CHECKED IN" : "CHECKED OUT"} at ${result.time}` });
-              if (announceEnabled) speak(`${result.type === "CHECK_IN" ? "Good morning" : "Goodbye"}, ${emp.firstName}`);
-              fetchSheet();
-            } else {
-              addDet({ time: checkTime, type: "fail", empName: `${emp.firstName} ${emp.lastName}`, message: `❌ Mark failed: ${(await markRes.json().catch(() => ({}))).error || markRes.status}` });
-            }
-          } else {
-            addDet({ time: checkTime, type: "info", faceCount, empName: `${emp.firstName} ${emp.lastName}`, distance: sim, confidence: conf, message: `🔄 Frame ${recent.length}/${CONSENSUS_FRAMES} — ${emp.firstName} (${conf}%, avg: ${(avgSim * 100).toFixed(1)}%)` });
-          }
+
+        lastMarkedRef.current[emp.id] = now;
+        setDebugOverlay(d => ({ ...d, status: `✅ ${emp.firstName}`, error: "" }));
+        addDet({ time: checkTime, type: "match", faceCount,
+          empName: `${emp.firstName} ${emp.lastName}`,
+          confidence: Math.round(decision.confidenceScore * 100),
+          message: `✅ CONFIRMED — ${emp.firstName} ${emp.lastName} (score: ${decision.confidenceScore.toFixed(3)}, margin: ${decision.margin.toFixed(3)}, ${decision.temporalFrameCount} frames, ${matchElapsed}s)` });
+
+        const photoUrl = canvas.toDataURL("image/jpeg", 0.92);
+        const markRes = await fetch("/api/attendance/face-mark", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ employeeId: emp.id, photoUrl }),
+        });
+        if (markRes.ok) {
+          const result = await markRes.json();
+          addDet({ time: checkTime, type: "mark", empName: result.employeeName,
+            message: `✅ ${result.employeeName} ${result.type === "CHECK_IN" ? "CHECKED IN" : "CHECKED OUT"} at ${result.time}` });
+          if (announceEnabled) speak(`${result.type === "CHECK_IN" ? "Good morning" : "Goodbye"}, ${emp.firstName}`);
+          fetchSheet();
         } else {
-          addDet({ time: checkTime, type: "info", faceCount, empName: `${emp.firstName} ${emp.lastName}`, distance: sim, confidence: conf, message: `🔄 Frame ${recent.length}/${CONSENSUS_FRAMES} — ${emp.firstName} (${conf}%)` });
+          addDet({ time: checkTime, type: "fail", empName: `${emp.firstName} ${emp.lastName}`,
+            message: `❌ Mark failed: ${(await markRes.json().catch(() => ({}))).error || markRes.status}` });
         }
+      } else if (decision.classification === "REVIEW") {
+        const topName = decision.topScores[0]?.name || "Unknown";
+        setDebugOverlay(d => ({ ...d, status: "⚠️ REVIEW", error: decision.reason }));
+        addDet({ time: checkTime, type: "review", faceCount, empName: topName,
+          confidence: Math.round(decision.confidenceScore * 100),
+          message: `⚠️ REVIEW — ${topName} (score: ${decision.confidenceScore.toFixed(3)}, reason: ${decision.reason})` });
+      } else {
+        const topName = decision.topScores[0]?.name || "UNKNOWN";
+        setDebugOverlay(d => ({ ...d, status: "❌ REJECTED", error: decision.reason }));
+        addDet({ time: checkTime, type: "fail", faceCount, empName: topName,
+          confidence: Math.round(decision.confidenceScore * 100),
+          message: `❌ REJECTED — ${topName} (score: ${decision.confidenceScore.toFixed(3)}, reason: ${decision.reason})` });
       }
     } catch (e: any) {
       const msg = e.message || "unknown error";
-      console.log(`❌ capture error: ${msg}`);
       addDet({ time: checkTime, type: "fail", message: `Error: ${msg}` });
       setDebugOverlay(d => ({ ...d, status: "error", error: msg }));
     } finally {
       clearTimeout(safetyTimer);
       capturingRef.current = false;
-      console.log(`✅ captureAndRecognize done (${capturingCount.current++})`);
+      capturingCount.current++;
     }
   };
 
   useEffect(() => {
     if (!active || known.length === 0) return;
     let running = true;
-    let frameCount = 0;
     const loop = () => {
       if (!running) return;
       animFrameRef.current = requestAnimationFrame(loop);
       try {
-        frameCount++;
         const motion = detectMotion();
         const elapsed = Date.now() - lastCaptureRef.current;
         const shouldCapture = motion || elapsed >= 2000;
@@ -403,7 +389,7 @@ function KioskContent() {
       prevFrameRef.current = null;
       setActive(true);
       setDetections([]);
-      addDet({ time: new Date().toLocaleTimeString(), type: "info", message: "Kiosk started" });
+      addDet({ time: new Date().toLocaleTimeString(), type: "info", message: "Kiosk started (server-side matching v10.0)" });
     } catch { alert("Camera access denied"); }
   };
 
@@ -421,6 +407,8 @@ function KioskContent() {
 
   if (authLoading) return <div className="loading-wrap"><div className="spinner" /></div>;
   if (!token) return null;
+
+  const classificationColor = lastClassification === "CONFIRMED" ? "var(--success)" : lastClassification === "REVIEW" ? "#f59e0b" : lastClassification === "REJECT" ? "var(--danger)" : "var(--text-muted)";
 
   return (
     <div className="app-layout">
@@ -450,10 +438,15 @@ function KioskContent() {
 
         <div style={{ display: "flex", gap: 12, fontSize: 12, marginBottom: 8, color: "var(--text-muted)", flexWrap: "wrap" }}>
           <span>🤖 AI: {modelReady ? "✅ connected" : "⏳ warming..."}</span>
-          <span>🔍 AI Server</span>
+          <span>🔍 Server-side matching v10.0</span>
           <span>👥 Known: {known.length} employees</span>
           <span>📸 Captures: {capturingCount.current}</span>
           <span>🔬 Last: {debugInfo.lastResult || "—"}</span>
+          {lastMatchDetails && (
+            <span style={{ color: classificationColor, fontWeight: 600 }}>
+              Last: {lastMatchDetails.threshold.toUpperCase()} ({(lastMatchDetails.score * 100).toFixed(1)}%)
+            </span>
+          )}
           <button className="btn btn-outline btn-sm" onClick={() => {
             fetch("/api/employees", { headers: { Authorization: `Bearer ${token}` } })
               .then(r => r.ok ? r.json() : [])
@@ -530,7 +523,7 @@ function KioskContent() {
                         {s.name}: {s.sim}%
                       </div>
                     ))}
-                    <div style={{ marginTop: 4, color: "#64748b", fontSize: 10 }}>Threshold: {Math.round(SIMILARITY_THRESHOLD * 100)}%</div>
+                    <div style={{ marginTop: 4, color: "#64748b", fontSize: 10 }}>Server-side matching</div>
                   </div>
                 )}
               </div>
@@ -600,16 +593,14 @@ function KioskContent() {
               detections.map((d, i) => (
                 <div key={i} style={{
                   padding: "4px 8px", borderBottom: "1px solid var(--border)",
-                  color: d.type === "fail" ? "var(--danger)" : d.type === "match" || d.type === "mark" ? "var(--success)" : d.type === "info" ? "var(--text-muted)" : "inherit",
+                  color: d.type === "fail" ? "var(--danger)" : d.type === "review" ? "#f59e0b" : d.type === "match" || d.type === "mark" ? "var(--success)" : d.type === "info" ? "var(--text-muted)" : "inherit",
                 }}>
                   <span style={{ color: "var(--text-muted)", marginRight: 8 }}>{d.time}</span>
                   {d.faceCount !== undefined && <span style={{ color: "var(--text-muted)", marginRight: 8 }}>👤{d.faceCount}</span>}
                   {d.confidence !== undefined && <span style={{ marginRight: 8 }}>{d.confidence}%</span>}
-                  {d.distance !== undefined && <span style={{ marginRight: 8, color: "var(--text-muted)" }}>d:{d.distance}</span>}
                   {d.empName && <span style={{ fontWeight: 600, marginRight: 8 }}>{d.empName}</span>}
                   {d.empCode && <span style={{ color: "var(--text-muted)", marginRight: 8 }}>{d.empCode}</span>}
                   {d.empDept && <span style={{ color: "var(--text-muted)", marginRight: 8 }}>{d.empDept}</span>}
-                  {d.knownCount !== undefined && <span style={{ color: "var(--text-muted)", marginRight: 8 }}>known:{d.knownCount}</span>}
                   <span>{d.message}</span>
                 </div>
               ))
