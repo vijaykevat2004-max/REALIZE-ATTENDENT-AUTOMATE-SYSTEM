@@ -29,7 +29,7 @@ interface DetectionInfo {
   message: string;
 }
 
-const SIMILARITY_THRESHOLD = 0.5;
+const SIMILARITY_THRESHOLD = 0.70;
 const MIN_CONFIDENCE = 90;
 const MIN_FACE_SIZE = 80;
 const MARK_COOLDOWN = 15000;
