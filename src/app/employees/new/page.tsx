@@ -46,7 +46,7 @@ function EmployeeForm() {
       if (!res.ok) throw new Error((await res.json()).error || "Save failed");
       const emp = await res.json();
       const faceRes = await fetch(`/api/employees/face/${emp.id}`, {
-        method: "POST",
+        method: "PUT",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ faceEmbedding: JSON.stringify(enc.encodings[0]) }),
       });
