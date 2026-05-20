@@ -33,12 +33,12 @@ const SIMILARITY_THRESHOLD = 0.70;
 const MIN_CONFIDENCE = 90;
 const MIN_FACE_SIZE = 80;
 const MARK_COOLDOWN = 15000;
-const CAPTURE_INTERVAL = 2000;
-const MOTION_THRESHOLD = 4;
+const CAPTURE_INTERVAL = 1000;
+const MOTION_THRESHOLD = 3;
 const MOTION_FRAME_W = 80;
 const MOTION_FRAME_H = 60;
-const CONSENSUS_FRAMES = 5;
-const CONSENSUS_AVG_THRESHOLD = 0.72;
+const CONSENSUS_FRAMES = 3;
+const CONSENSUS_AVG_THRESHOLD = 0.70;
 
 function computeSimilarity(a: number[], b: number[]): number {
   if (!a || !b || a.length === 0 || b.length === 0) return 0;
@@ -359,7 +359,7 @@ function KioskContent() {
         frameCount++;
         const motion = detectMotion();
         const elapsed = Date.now() - lastCaptureRef.current;
-        const shouldCapture = motion || elapsed >= 4000;
+        const shouldCapture = motion || elapsed >= 2000;
         if (shouldCapture && elapsed >= CAPTURE_INTERVAL) {
           lastCaptureRef.current = Date.now();
           captureAndRecognize();
