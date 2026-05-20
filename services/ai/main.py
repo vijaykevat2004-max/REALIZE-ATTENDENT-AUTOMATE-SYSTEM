@@ -1,5 +1,6 @@
 """
-HRMS AI Face Service v9 — YuNet Detection + SFace Recognition
+HRMS AI Face Service v9.2 — YuNet Detection + SFace Recognition
+Models bundled — no download needed
 """
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,99 +12,46 @@ import numpy as np
 import os
 import logging
 import traceback
-import urllib.request
-import ssl
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 logger = logging.getLogger("hrms-ai")
 
-app = FastAPI(title="HRMS AI", version="9.1.0")
+app = FastAPI(title="HRMS AI", version="9.2.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-MODEL_DIR = "/tmp/hrms_models"
-YUNET_PATH = os.path.join(MODEL_DIR, "yunet.onnx")
-SFACE_PATH = os.path.join(MODEL_DIR, "sface.onnx")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+YUNET_PATH = os.path.join(BASE_DIR, "yunet.onnx")
+SFACE_PATH = os.path.join(BASE_DIR, "sface.onnx")
 
 detector = None
 recognizer = None
 load_error = ""
 
-def download(url, path):
-    """Download with SSL context and retries."""
-    if os.path.exists(path) and os.path.getsize(path) > 100000:
-        return True
-    os.makedirs(MODEL_DIR, exist_ok=True)
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    for attempt in range(3):
-        try:
-            logger.info(f"Download attempt {attempt+1}: {url}")
-            urllib.request.urlretrieve(url, path, context=ctx)
-            size = os.path.getsize(path)
-            logger.info(f"Downloaded {size} bytes to {path}")
-            if size > 100000:
-                return True
-        except Exception as e:
-            logger.error(f"Download attempt {attempt+1} failed: {e}")
-    return False
-
 @app.on_event("startup")
 async def startup():
     global detector, recognizer, load_error
-    os.makedirs(MODEL_DIR, exist_ok=True)
     logger.info(f"OpenCV version: {cv2.__version__}")
-    logger.info(f"MODEL_DIR: {MODEL_DIR}")
+    logger.info(f"YuNet path: {YUNET_PATH} (exists: {os.path.exists(YUNET_PATH)}, size: {os.path.getsize(YUNET_PATH) if os.path.exists(YUNET_PATH) else 0})")
+    logger.info(f"SFace path: {SFACE_PATH} (exists: {os.path.exists(SFACE_PATH)}, size: {os.path.getsize(SFACE_PATH) if os.path.exists(SFACE_PATH) else 0})")
     
-    # Download models
-    yunet_urls = [
-        "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
-        "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2022mar.onnx",
-    ]
-    sface_urls = [
-        "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx",
-    ]
-    
-    yunet_ok = False
-    for url in yunet_urls:
-        if download(url, YUNET_PATH):
-            yunet_ok = True
-            break
-    
-    sface_ok = False
-    for url in sface_urls:
-        if download(url, SFACE_PATH):
-            sface_ok = True
-            break
-    
-    # Create detector
     try:
-        if yunet_ok and os.path.exists(YUNET_PATH):
-            detector = cv2.FaceDetectorYN.create(YUNET_PATH, "", (320, 320), 0.9, 0.3, 5000)
-            logger.info("✅ YuNet detector created")
-        else:
-            load_error += "YuNet download failed. "
-            logger.error("❌ YuNet not available")
+        detector = cv2.FaceDetectorYN.create(YUNET_PATH, "", (320, 320), 0.9, 0.3, 5000)
+        logger.info("✅ YuNet detector created")
     except Exception as e:
-        load_error += f"YuNet create failed: {e}. "
-        logger.error(f"❌ YuNet create failed: {e}")
+        load_error += f"YuNet: {e}. "
+        logger.error(f"❌ YuNet failed: {e}")
     
-    # Create recognizer
     try:
-        if sface_ok and os.path.exists(SFACE_PATH):
-            recognizer = cv2.FaceRecognizerSF.create(SFACE_PATH, "")
-            logger.info("✅ SFace recognizer created")
-        else:
-            load_error += "SFace download failed. "
-            logger.error("❌ SFace not available")
+        recognizer = cv2.FaceRecognizerSF.create(SFACE_PATH, "")
+        logger.info("✅ SFace recognizer created")
     except Exception as e:
-        load_error += f"SFace create failed: {e}. "
-        logger.error(f"❌ SFace create failed: {e}")
+        load_error += f"SFace: {e}. "
+        logger.error(f"❌ SFace failed: {e}")
     
     if not load_error:
-        logger.info("✅ All models loaded successfully!")
+        logger.info("✅ All models loaded!")
     else:
-        logger.error(f"❌ Load errors: {load_error}")
+        logger.error(f"❌ Errors: {load_error}")
 
 def py(val):
     if isinstance(val, np.ndarray): return val.tolist()
@@ -199,7 +147,7 @@ def health():
 
 @app.get("/")
 def root():
-    return ok({"service": "HRMS AI v9.1", "detector": detector is not None, "recognizer": recognizer is not None, "error": load_error})
+    return ok({"service": "HRMS AI v9.2", "detector": detector is not None, "recognizer": recognizer is not None, "error": load_error})
 
 @app.post("/detect")
 async def detect_endpoint(image: UploadFile = File(...)):
