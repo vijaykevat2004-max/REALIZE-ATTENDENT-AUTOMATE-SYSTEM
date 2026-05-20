@@ -25,6 +25,11 @@ function ReportsContent() {
       .then((r) => r.ok ? r.json() : []).then((d) => setReport(Array.isArray(d) ? d : []));
   }, [token, tab, fromDate, toDate]);
 
+  const exportCSV = async () => {
+    const url = `/api/reports/export?type=${tab}&format=csv${fromDate ? `&from=${fromDate}` : ""}${toDate ? `&to=${toDate}` : ""}`;
+    window.open(url, "_blank");
+  };
+
   const exportExcel = async () => {
     const url = `/api/reports/export?type=${tab}&format=excel${fromDate ? `&from=${fromDate}` : ""}${toDate ? `&to=${toDate}` : ""}`;
     const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
@@ -42,12 +47,13 @@ function ReportsContent() {
     salary: ["Employee", "Month", "Gross", "Deductions", "Net", "Status"],
     leaves: ["Employee", "Type", "From", "To", "Days", "Status"],
     employees: ["Code", "Name", "Department", "Designation", "Status"],
+    "face-detections": ["Employee", "Date", "Time", "Type"],
   };
 
   if (authLoading) return <div className="loading-wrap"><div className="spinner" /></div>;
   if (!token) return null;
 
-  const tabs = ["attendance", "salary", "leaves", "employees"];
+  const tabs = ["attendance", "face-detections", "employees"];
 
   return (
     <div className="app-layout">
@@ -55,7 +61,10 @@ function ReportsContent() {
       <main className="main-content">
         <div className="page-header">
           <h1>Reports</h1>
-          <button className="btn btn-primary" onClick={exportExcel}>📥 Export Excel</button>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="btn btn-primary" onClick={exportCSV}>📥 Download CSV</button>
+            <button className="btn btn-outline" onClick={exportExcel}>📊 Export Excel</button>
+          </div>
         </div>
         <div className="tabs">
           {tabs.map((t) => <div key={t} className={`tab ${tab === t ? "active" : ""}`} onClick={() => setTab(t)} style={{ textTransform: "capitalize" }}>{t}</div>)}
@@ -118,6 +127,14 @@ function ReportsContent() {
                         <td>{r.department}</td>
                         <td>{r.designation}</td>
                         <td><span className={`badge badge-${r.status === "ACTIVE" ? "success" : "danger"}`}>{r.status}</span></td>
+                      </>
+                    )}
+                    {tab === "face-detections" && (
+                      <>
+                        <td>{r.employee?.firstName} {r.employee?.lastName}</td>
+                        <td>{r.date}</td>
+                        <td>{r.time}</td>
+                        <td><span className={`badge ${r.type === "CHECK_IN" ? "badge-success" : "badge-accent"}`}>{r.type === "CHECK_IN" ? "IN" : "OUT"}</span></td>
                       </>
                     )}
                   </tr>
