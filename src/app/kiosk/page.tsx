@@ -29,7 +29,7 @@ interface DetectionInfo {
   message: string;
 }
 
-const SIMILARITY_THRESHOLD = 0.90;
+const SIMILARITY_THRESHOLD = 0.75;
 const MIN_CONFIDENCE = 90;
 const MIN_FACE_SIZE = 80;
 const MARK_COOLDOWN = 15000;
@@ -38,7 +38,7 @@ const MOTION_THRESHOLD = 3;
 const MOTION_FRAME_W = 80;
 const MOTION_FRAME_H = 60;
 const CONSENSUS_FRAMES = 3;
-const CONSENSUS_AVG_THRESHOLD = 0.92;
+const CONSENSUS_AVG_THRESHOLD = 0.77;
 const MARGIN_THRESHOLD = 0.10;
 
 function computeSimilarity(a: number[], b: number[]): number {
