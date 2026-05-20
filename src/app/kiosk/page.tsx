@@ -290,6 +290,11 @@ function KioskContent() {
         const sim = Math.round(bestSim * 1000) / 1000;
         const conf = Math.round(bestSim * 100);
         const margin = Math.round((bestSim - secondSim) * 1000) / 1000;
+        const allScores = known.map((e, i) => {
+          if (e.encoding.length !== target.length) return null;
+          return { name: `${e.firstName} ${e.lastName}`, sim: Math.round(computeSimilarity(e.encoding, target) * 100) };
+        }).filter(Boolean).sort((a: any, b: any) => b.sim - a.sim);
+        console.log('🔍 ALL SCORES:', JSON.stringify(allScores.slice(0, 5)));
         if (bestSim < SIMILARITY_THRESHOLD) {
           verificationBufferRef.current = [];
           addDet({ time: checkTime, type: "fail", empName: `${emp.firstName} ${emp.lastName}`, distance: sim, confidence: conf, message: `❌ REJECTED — similarity ${conf}% < ${Math.round(SIMILARITY_THRESHOLD * 100)}% (not enrolled person)` });
