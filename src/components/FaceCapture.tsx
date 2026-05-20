@@ -17,20 +17,22 @@ export default function FaceCapture({ onCapture }: Props) {
     try {
       const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
       streamRef.current = s;
-      if (video.current) video.current.srcObject = s;
       setCam(true);
-      // wait for video to have real dimensions
-      const v = video.current;
-      if (v) {
-        v.play();
-        for (let i = 0; i < 50; i++) {
-          if (v.videoWidth > 0 && v.videoHeight > 0) break;
-          await new Promise((r) => setTimeout(r, 100));
-        }
-      }
-      setReady(true);
     } catch { alert("Camera access denied"); }
   }, []);
+
+  useEffect(() => {
+    if (cam && video.current && streamRef.current) {
+      video.current.srcObject = streamRef.current;
+      video.current.play().then(async () => {
+        for (let i = 0; i < 50; i++) {
+          if (video.current!.videoWidth > 0 && video.current!.videoHeight > 0) break;
+          await new Promise(r => setTimeout(r, 100));
+        }
+        setReady(true);
+      }).catch(() => { setReady(true); });
+    }
+  }, [cam]);
 
   const stop = useCallback(() => {
     streamRef.current?.getTracks().forEach((t) => t.stop());
@@ -65,19 +67,17 @@ export default function FaceCapture({ onCapture }: Props) {
 
   return (
     <div>
+      <video ref={video} autoPlay playsInline muted style={{ width: "100%", borderRadius: 8, display: cam ? "block" : "none" }} />
+      <canvas ref={canvas} style={{ display: "none" }} />
       {cam ? (
-        <div>
-          <video ref={video} autoPlay playsInline muted style={{ width: "100%", borderRadius: 8 }} />
-          <canvas ref={canvas} style={{ display: "none" }} />
-          <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
-            <button className="btn btn-success" onClick={capture} disabled={!ready}>📸 Capture Photo</button>
-            <button className="btn btn-danger" onClick={stop}>Stop</button>
-          </div>
-          {!ready && <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}>⏳ Camera starting...</p>}
+        <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
+          <button className="btn btn-success" onClick={capture} disabled={!ready}>📸 Capture Photo</button>
+          <button className="btn btn-danger" onClick={stop}>Stop</button>
         </div>
       ) : (
-        <button className="btn btn-primary" onClick={start}>📷 Start Camera</button>
+        <button className="btn btn-primary" onClick={start} style={{ marginTop: 8 }}>📷 Start Camera</button>
       )}
+      {!ready && cam && <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}>⏳ Camera starting...</p>}
     </div>
   );
 }
