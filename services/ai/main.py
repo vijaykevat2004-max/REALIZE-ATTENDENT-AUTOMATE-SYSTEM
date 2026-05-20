@@ -92,7 +92,7 @@ def detect_and_encode(img):
 class MatchReq(BaseModel):
     known: List[List[float]]
     target: List[float]
-    threshold: float = 0.36
+    threshold: float = 0.5
 
 @app.post("/encode-face")
 async def encode_face(image: UploadFile = File(...)):

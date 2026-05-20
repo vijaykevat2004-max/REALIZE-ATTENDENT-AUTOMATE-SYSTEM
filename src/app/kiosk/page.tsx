@@ -29,7 +29,7 @@ interface DetectionInfo {
   message: string;
 }
 
-const SIMILARITY_THRESHOLD = 0.4;
+const SIMILARITY_THRESHOLD = 0.5;
 const MIN_CONFIDENCE = 90;
 const MIN_FACE_SIZE = 80;
 const MARK_COOLDOWN = 15000;
@@ -274,12 +274,15 @@ function KioskContent() {
         const target = encData.encodings[fi];
         let bestIdx = -1, bestSim = -1;
         for (let i = 0; i < known.length; i++) {
-          if (known[i].encoding.length !== target.length) continue;
+          if (known[i].encoding.length !== target.length) {
+            console.log(`⚠️ Dim mismatch: known=${known[i].encoding.length} target=${target.length} for ${known[i].firstName}`);
+            continue;
+          }
           const s = computeSimilarity(known[i].encoding, target);
           if (s > bestSim) { bestSim = s; bestIdx = i; }
         }
         if (bestIdx === -1) {
-          addDet({ time: checkTime, type: "fail", message: "No enrolled faces to match against" });
+          addDet({ time: checkTime, type: "fail", message: "No matching embeddings (dimension mismatch — re-enroll faces)" });
           continue;
         }
         const emp = known[bestIdx];
