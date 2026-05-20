@@ -37,6 +37,8 @@ const CAPTURE_INTERVAL = 2000;
 const MOTION_THRESHOLD = 4;
 const MOTION_FRAME_W = 80;
 const MOTION_FRAME_H = 60;
+const CONSENSUS_FRAMES = 5;
+const CONSENSUS_AVG_THRESHOLD = 0.72;
 
 function computeSimilarity(a: number[], b: number[]): number {
   if (!a || !b || a.length === 0 || b.length === 0) return 0;
@@ -80,8 +82,8 @@ function KioskContent() {
   const [modelReady, setModelReady] = useState(false);
   const [debugOverlay, setDebugOverlay] = useState({ status: "initializing", faces: 0, dims: 0, error: "", lastOk: "" });
   const [capturedPreview, setCapturedPreview] = useState<string | null>(null);
-
   const [debugInfo, setDebugInfo] = useState({ models: "", employees: "", lastCapture: "", lastResult: "" });
+  const verificationBufferRef = useRef<{ employeeId: string; similarity: number; timestamp: number }[]>([]);
 
   const addDet = (d: DetectionInfo) => {
     setDetections((prev) => [d, ...prev].slice(0, 100));
@@ -278,6 +280,62 @@ function KioskContent() {
             console.log(`⚠️ Dim mismatch: known=${known[i].encoding.length} target=${target.length} for ${known[i].firstName}`);
             continue;
           }
+          const s = computeSimilarity(known[i].encoding, target);
+          if (s > bestSim) { bestSim = s; bestIdx = i; }
+        }
+        if (bestIdx === -1) {
+          addDet({ time: checkTime, type: "fail", message: "No matching embeddings (dimension mismatch — re-enroll faces)" });
+          continue;
+        }
+        const emp = known[bestIdx];
+        const sim = Math.round(bestSim * 1000) / 1000;
+        const conf = Math.round(bestSim * 100);
+        if (bestSim < SIMILARITY_THRESHOLD) {
+          verificationBufferRef.current = [];
+          addDet({ time: checkTime, type: "fail", empName: `${emp.firstName} ${emp.lastName}`, distance: sim, confidence: conf, message: `❌ REJECTED — similarity ${conf}% < ${Math.round(SIMILARITY_THRESHOLD * 100)}% (not enrolled person)` });
+          setDebugOverlay(d => ({ ...d, status: "rejected", error: `sim ${conf}% < threshold` }));
+          continue;
+        }
+        verificationBufferRef.current.push({ employeeId: emp.id, similarity: bestSim, timestamp: now });
+        const cutoff = now - 8000;
+        verificationBufferRef.current = verificationBufferRef.current.filter(f => f.timestamp > cutoff);
+        const recent = verificationBufferRef.current.slice(-CONSENSUS_FRAMES);
+        if (recent.length >= CONSENSUS_FRAMES) {
+          const allSamePerson = recent.every(f => f.employeeId === emp.id);
+          const avgSim = recent.reduce((sum, f) => sum + f.similarity, 0) / recent.length;
+          const allAboveThreshold = recent.every(f => f.similarity >= SIMILARITY_THRESHOLD);
+          if (allSamePerson && allAboveThreshold && avgSim >= CONSENSUS_AVG_THRESHOLD) {
+            const last = lastMarkedRef.current[emp.id] || 0;
+            if (now - last < MARK_COOLDOWN) {
+              addDet({ time: checkTime, type: "info", faceCount, empName: `${emp.firstName} ${emp.lastName}`, distance: sim, confidence: conf, message: `⏳ ${emp.firstName} — cooldown (${CONSENSUS_FRAMES}/${CONSENSUS_FRAMES} verified)` });
+              verificationBufferRef.current = [];
+              continue;
+            }
+            lastMarkedRef.current[emp.id] = now;
+            verificationBufferRef.current = [];
+            setDebugOverlay(d => ({ ...d, status: `✅ ${emp.firstName}`, error: "" }));
+            addDet({ time: checkTime, type: "match", empName: `${emp.firstName} ${emp.lastName}`, distance: sim, confidence: conf, message: `✅ VERIFIED ${CONSENSUS_FRAMES}/${CONSENSUS_FRAMES} frames — ${emp.firstName} ${emp.lastName} (avg sim: ${(avgSim * 100).toFixed(1)}%)` });
+            const photoUrl = canvas.toDataURL("image/jpeg", 0.92);
+            const markRes = await fetch("/api/attendance/face-mark", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+              body: JSON.stringify({ employeeId: emp.id, photoUrl }),
+            });
+            if (markRes.ok) {
+              const result = await markRes.json();
+              addDet({ time: checkTime, type: "mark", empName: result.employeeName, message: `✅ ${result.employeeName} ${result.type === "CHECK_IN" ? "CHECKED IN" : "CHECKED OUT"} at ${result.time}` });
+              if (announceEnabled) speak(`${result.type === "CHECK_IN" ? "Good morning" : "Goodbye"}, ${emp.firstName}`);
+              fetchSheet();
+            } else {
+              addDet({ time: checkTime, type: "fail", empName: `${emp.firstName} ${emp.lastName}`, message: `❌ Mark failed: ${(await markRes.json().catch(() => ({}))).error || markRes.status}` });
+            }
+          } else {
+            addDet({ time: checkTime, type: "info", faceCount, empName: `${emp.firstName} ${emp.lastName}`, distance: sim, confidence: conf, message: `🔄 Frame ${recent.length}/${CONSENSUS_FRAMES} — ${emp.firstName} (${conf}%, avg: ${(avgSim * 100).toFixed(1)}%)` });
+          }
+        } else {
+          addDet({ time: checkTime, type: "info", faceCount, empName: `${emp.firstName} ${emp.lastName}`, distance: sim, confidence: conf, message: `🔄 Frame ${recent.length}/${CONSENSUS_FRAMES} — ${emp.firstName} (${conf}%)` });
+        }
+      }
           const s = computeSimilarity(known[i].encoding, target);
           if (s > bestSim) { bestSim = s; bestIdx = i; }
         }
