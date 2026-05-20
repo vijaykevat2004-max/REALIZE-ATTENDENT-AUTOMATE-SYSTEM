@@ -29,7 +29,7 @@ interface DetectionInfo {
   message: string;
 }
 
-const SIMILARITY_THRESHOLD = 0.70;
+const SIMILARITY_THRESHOLD = 0.80;
 const MIN_CONFIDENCE = 90;
 const MIN_FACE_SIZE = 80;
 const MARK_COOLDOWN = 15000;
@@ -38,7 +38,8 @@ const MOTION_THRESHOLD = 3;
 const MOTION_FRAME_W = 80;
 const MOTION_FRAME_H = 60;
 const CONSENSUS_FRAMES = 3;
-const CONSENSUS_AVG_THRESHOLD = 0.70;
+const CONSENSUS_AVG_THRESHOLD = 0.82;
+const MARGIN_THRESHOLD = 0.10;
 
 function computeSimilarity(a: number[], b: number[]): number {
   if (!a || !b || a.length === 0 || b.length === 0) return 0;
@@ -274,14 +275,12 @@ function KioskContent() {
       const now = Date.now();
       for (let fi = 0; fi < encData.encodings.length; fi++) {
         const target = encData.encodings[fi];
-        let bestIdx = -1, bestSim = -1;
+        let bestIdx = -1, bestSim = -1, secondSim = -1;
         for (let i = 0; i < known.length; i++) {
-          if (known[i].encoding.length !== target.length) {
-            console.log(`⚠️ Dim mismatch: known=${known[i].encoding.length} target=${target.length} for ${known[i].firstName}`);
-            continue;
-          }
+          if (known[i].encoding.length !== target.length) continue;
           const s = computeSimilarity(known[i].encoding, target);
-          if (s > bestSim) { bestSim = s; bestIdx = i; }
+          if (s > bestSim) { secondSim = bestSim; bestSim = s; bestIdx = i; }
+          else if (s > secondSim) { secondSim = s; }
         }
         if (bestIdx === -1) {
           addDet({ time: checkTime, type: "fail", message: "No matching embeddings (dimension mismatch — re-enroll faces)" });
@@ -290,10 +289,17 @@ function KioskContent() {
         const emp = known[bestIdx];
         const sim = Math.round(bestSim * 1000) / 1000;
         const conf = Math.round(bestSim * 100);
+        const margin = Math.round((bestSim - secondSim) * 1000) / 1000;
         if (bestSim < SIMILARITY_THRESHOLD) {
           verificationBufferRef.current = [];
           addDet({ time: checkTime, type: "fail", empName: `${emp.firstName} ${emp.lastName}`, distance: sim, confidence: conf, message: `❌ REJECTED — similarity ${conf}% < ${Math.round(SIMILARITY_THRESHOLD * 100)}% (not enrolled person)` });
           setDebugOverlay(d => ({ ...d, status: "rejected", error: `sim ${conf}% < threshold` }));
+          continue;
+        }
+        if (margin < MARGIN_THRESHOLD) {
+          verificationBufferRef.current = [];
+          addDet({ time: checkTime, type: "fail", empName: `${emp.firstName} ${emp.lastName}`, distance: sim, confidence: conf, message: `❌ AMBIGUOUS — margin ${Math.round(margin * 100)}% < ${Math.round(MARGIN_THRESHOLD * 100)}% (too close to another person)` });
+          setDebugOverlay(d => ({ ...d, status: "ambiguous", error: `margin ${Math.round(margin * 100)}% too small` }));
           continue;
         }
         verificationBufferRef.current.push({ employeeId: emp.id, similarity: bestSim, timestamp: now });
