@@ -37,11 +37,14 @@ export async function DELETE(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const all = searchParams.get("all");
     if (all === "true") {
-      // Delete all employees and their related records
+      // Delete related records first (foreign key constraints)
+      await prisma.salaryConfig.deleteMany();
       await prisma.faceDetectionLog.deleteMany();
       await prisma.attendanceLog.deleteMany();
+      await prisma.leaveRequest.deleteMany();
+      await prisma.payrollRecord.deleteMany();
       await prisma.employee.deleteMany();
-      return NextResponse.json({ success: true, message: "All employees deleted" });
+      return NextResponse.json({ success: true, message: "All employees and related data deleted" });
     }
     return NextResponse.json({ error: "Specify ?all=true to delete all" }, { status: 400 });
   } catch (e: any) {
