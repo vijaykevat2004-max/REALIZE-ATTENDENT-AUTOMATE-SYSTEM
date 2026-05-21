@@ -1,9 +1,7 @@
 "use client";
 
-// Auto-detect: use local AI service if available, fallback to cloud proxy
-const LOCAL_API = "http://localhost:8000";
-const CLOUD_API = "/api/ai";
-let useLocal = true;
+// Use Next.js API proxy (works on Vercel + localhost)
+const API = "/api/ai";
 
 export interface QualityResult {
   score: number;
@@ -51,15 +49,7 @@ export interface IndustryMatchResult {
 }
 
 async function getApi(): Promise<string> {
-  if (useLocal) {
-    try {
-      const res = await fetch(`${LOCAL_API}/health`, { signal: AbortSignal.timeout(2000) });
-      if (res.ok) return LOCAL_API;
-    } catch {
-      useLocal = false;
-    }
-  }
-  return CLOUD_API;
+  return API;
 }
 
 export async function aiEncode(blob: Blob): Promise<EncodeResult> {

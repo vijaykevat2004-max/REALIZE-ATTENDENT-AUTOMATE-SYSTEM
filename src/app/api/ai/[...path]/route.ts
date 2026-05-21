@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const AI_BASE = "https://hrms-ai-abv8.onrender.com";
+// Use environment variable for AI service URL, fallback to Render
+const AI_BASE = process.env.AI_SERVICE_URL || "https://hrms-ai-abv8.onrender.com";
 
 export async function GET(request: NextRequest, { params }: { params: { path: string[] } }) {
   return proxy(request, params.path, "GET");

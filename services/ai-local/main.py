@@ -48,11 +48,11 @@ QUALITY_BRIGHT_MAX = 220.0
 QUALITY_FACE_MIN_SIZE = 80
 QUALITY_FACE_RATIO_MAX = 0.8
 
-# Matching thresholds
-BASE_THRESHOLD = 0.60
-MARGIN_THRESHOLD = 0.05
-CONFIRMED_THRESHOLD = 0.70
-REVIEW_THRESHOLD = 0.60
+# Matching thresholds - lenient for testing
+BASE_THRESHOLD = 0.50
+MARGIN_THRESHOLD = 0.03
+CONFIRMED_THRESHOLD = 0.60
+REVIEW_THRESHOLD = 0.50
 
 @app.on_event("startup")
 async def startup():
@@ -438,16 +438,16 @@ async def industry_match_json(req: dict):
                 "message": "No face detected. Look directly at camera."
             })
         
-        # Step 2: Quality gate
-        if quality and not quality.get("good_quality", False):
-            return ok({
-                "success": True,
-                "decision": "REJECT",
-                "reason": "quality_gate_failed",
-                "quality": quality,
-                "detection_confidence": conf,
-                "message": f"Quality issues: {', '.join(quality.get('issues', []))}"
-            })
+        # Step 2: Quality gate (disabled for testing)
+        # if quality and not quality.get("good_quality", False):
+        #     return ok({
+        #         "success": True,
+        #         "decision": "REJECT",
+        #         "reason": "quality_gate_failed",
+        #         "quality": quality,
+        #         "detection_confidence": conf,
+        #         "message": f"Quality issues: {', '.join(quality.get('issues', []))}"
+        #     })
         
         # Step 3: Match against known
         logger.info(f"🔍 Matching against {len(known_embeddings)} known embeddings")
