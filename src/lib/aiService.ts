@@ -145,7 +145,7 @@ export async function aiEncodeMulti(blobs: Blob[]): Promise<{
     const res = await fetch(`${api}/encode-multi`, {
       method: "POST",
       body: fd,
-      signal: AbortSignal.timeout(30000),
+      signal: AbortSignal.timeout(90000), // 90 seconds for multi-image (Render free tier is slow)
     });
     const data = await res.json();
     if (!res.ok || !data.success) {
@@ -160,7 +160,7 @@ export async function aiEncodeMulti(blobs: Blob[]): Promise<{
       avg_quality: data.avg_quality,
     };
   } catch (e: any) {
-    return { success: false, message: e.name === "TimeoutError" ? "AI service timeout" : e.message };
+    return { success: false, message: e.name === "TimeoutError" ? "AI service timeout (90s) - Render is waking up, try again in 30 seconds" : e.message };
   }
 }
 
