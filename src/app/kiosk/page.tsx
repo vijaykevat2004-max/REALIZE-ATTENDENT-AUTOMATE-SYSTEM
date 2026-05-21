@@ -407,9 +407,9 @@ function KioskContent() {
           <span>👥 Known: {known.length} employees</span>
           <span>📸 Captures: {capturingCount.current}</span>
           <span>🔬 Last: {debugInfo.lastResult || "—"}</span>
-          {lastMatchDetails && (
-            <span style={{ color: classificationColor, fontWeight: 600 }}>
-              Last: {lastMatchDetails.threshold.toUpperCase()} ({(lastMatchDetails.score * 100).toFixed(1)}%)
+          {lastDecision && (
+            <span style={{ color: lastDecision === "CONFIRMED" ? "var(--success)" : lastDecision === "REVIEW" ? "#f59e0b" : "var(--danger)", fontWeight: 600 }}>
+              Last: {lastDecision}
             </span>
           )}
           <button className="btn btn-outline btn-sm" onClick={() => {
