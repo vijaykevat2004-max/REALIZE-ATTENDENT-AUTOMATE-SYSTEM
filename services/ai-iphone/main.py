@@ -28,11 +28,11 @@ logger = logging.getLogger("hrms-ai-iphone")
 app = FastAPI(title="HRMS AI iPhone-Grade v3.0", version="3.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# Model paths
+# Model paths - use existing models from parent ai directory
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODELS_DIR = os.path.join(BASE_DIR, "models")
-SCRFD_PATH = os.path.join(MODELS_DIR, "scrfd.onnx")
-MOBILEFACE_PATH = os.path.join(MODELS_DIR, "mobileface.onnx")
+PARENT_AI_DIR = os.path.join(BASE_DIR, "..", "ai")
+YUNET_PATH = os.path.join(PARENT_AI_DIR, "yunet.onnx")
+SFACE_PATH = os.path.join(PARENT_AI_DIR, "sface.onnx")
 
 # Global state
 detector = None
@@ -60,22 +60,22 @@ REVIEW_THRESHOLD = 0.60
 async def startup():
     global detector, recognizer, load_error
     logger.info(f"OpenCV version: {cv2.__version__}")
-    logger.info(f"SCRFD path: {SCRFD_PATH} (exists: {os.path.exists(SCRFD_PATH)}, size: {os.path.getsize(SCRFD_PATH) if os.path.exists(SCRFD_PATH) else 0})")
-    logger.info(f"MobileFaceNet path: {MOBILEFACE_PATH} (exists: {os.path.exists(MOBILEFACE_PATH)}, size: {os.path.getsize(MOBILEFACE_PATH) if os.path.exists(MOBILEFACE_PATH) else 0})")
+    logger.info(f"YuNet path: {YUNET_PATH} (exists: {os.path.exists(YUNET_PATH)}, size: {os.path.getsize(YUNET_PATH) if os.path.exists(YUNET_PATH) else 0})")
+    logger.info(f"SFace path: {SFACE_PATH} (exists: {os.path.exists(SFACE_PATH)}, size: {os.path.getsize(SFACE_PATH) if os.path.exists(SFACE_PATH) else 0})")
     
     try:
-        detector = cv2.FaceDetectorYN.create(SCRFD_PATH, "", (640, 640), 0.9, 0.3, 5000)
-        logger.info("✅ SCRFD detector created")
+        detector = cv2.FaceDetectorYN.create(YUNET_PATH, "", (640, 640), 0.9, 0.3, 5000)
+        logger.info("✅ YuNet detector created")
     except Exception as e:
-        load_error += f"SCRFD: {e}. "
-        logger.error(f"❌ SCRFD failed: {e}")
+        load_error += f"YuNet: {e}. "
+        logger.error(f"❌ YuNet failed: {e}")
     
     try:
-        recognizer = cv2.FaceRecognizerSF.create(MOBILEFACE_PATH, "")
-        logger.info("✅ MobileFaceNet recognizer created")
+        recognizer = cv2.FaceRecognizerSF.create(SFACE_PATH, "")
+        logger.info("✅ SFace recognizer created")
     except Exception as e:
-        load_error += f"MobileFaceNet: {e}. "
-        logger.error(f"❌ MobileFaceNet failed: {e}")
+        load_error += f"SFace: {e}. "
+        logger.error(f"❌ SFace failed: {e}")
     
     if not load_error:
         logger.info("✅ All models loaded! iPhone-grade system ready.")
@@ -453,7 +453,7 @@ async def encode_multi_face(images: List[UploadFile] = File(...)):
 def health():
     return ok({
         "ok": detector is not None and recognizer is not None,
-        "model": "scrfd+mobileface-iphone",
+        "model": "yunet+sface-iphone",
         "detector_loaded": detector is not None,
         "recognizer_loaded": recognizer is not None,
         "error": load_error,
