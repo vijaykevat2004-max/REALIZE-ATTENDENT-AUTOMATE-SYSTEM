@@ -3,7 +3,7 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import Sidebar from "@/components/Sidebar";
 import { AuthProvider, useAuth } from "@/components/AuthProvider";
 import { useRouter } from "next/navigation";
-import { aiIndustryMatch, aiWarmUp, type IndustryMatchResult } from "@/lib/aiService";
+import { aiIndustryMatch, aiWarmUp, aiEncode, type IndustryMatchResult } from "@/lib/aiService";
 
 interface KioskEmployee {
   id: string; firstName: string; lastName: string; employeeCode: string; department: string; encoding: number[];
@@ -92,7 +92,7 @@ function KioskContent() {
     const t0 = performance.now();
     addDet({ time: new Date().toLocaleTimeString(), type: "check", message: "Sending to AI for detection..." });
     const blob = await (await fetch(dataUrl)).blob();
-    const encData = await encodeAllFacesFromVideo(canvas);
+    const encData = await aiEncode(blob);
     const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
     const dim = encData.encodings?.[0]?.length || 0;
     const count = encData.encodings?.length || 0;
