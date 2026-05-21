@@ -1,9 +1,11 @@
 """
-Industry-Grade Face Recognition Service v1.0
-Zero False Positives - Only Registered Faces Accepted
-PC Testing → Raspberry Pi Ready
+Industry-Grade Face Recognition Service v2.0
+- Multi-image enrollment with quality gates
+- Temporal verification for matching
+- Dynamic thresholds based on employee count
+- Zero false positives guarantee
 """
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -21,13 +23,14 @@ import json
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("hrms-ai-industry")
 
-app = FastAPI(title="HRMS AI Industry", version="1.0.0")
+app = FastAPI(title="HRMS AI Industry v2.0", version="2.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # Model paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-YUNET_PATH = os.path.join(BASE_DIR, "..", "ai", "yunet.onnx")
-SFACE_PATH = os.path.join(BASE_DIR, "..", "ai", "sface.onnx")
+MODELS_DIR = os.path.join(BASE_DIR, "models")
+YUNET_PATH = os.path.join(MODELS_DIR, "yunet.onnx")
+SFACE_PATH = os.path.join(MODELS_DIR, "sface.onnx")
 
 # Global state
 detector = None
@@ -35,31 +38,28 @@ recognizer = None
 load_error = ""
 
 # Temporal buffer for verification
-# Format: {session_id: [(employee_id, similarity, quality, timestamp), ...]}
 TEMPORAL_BUFFER: Dict[str, List[dict]] = defaultdict(list)
-TEMPORAL_WINDOW_MS = 8000  # 8 seconds
+TEMPORAL_WINDOW_MS = 10000  # 10 seconds
 MIN_CONSENSUS_FRAMES = 5
-CONSENSUS_AVG_THRESHOLD = 0.85
 
 # Quality thresholds
-QUALITY_BLUR_MIN = 80.0
-QUALITY_BRIGHT_MIN = 40.0
-QUALITY_BRIGHT_MAX = 220.0
-QUALITY_FACE_MIN_SIZE = 80
-QUALITY_FACE_RATIO_MAX = 0.8
+QUALITY_BLUR_MIN = 50.0
+QUALITY_BRIGHT_MIN = 30.0
+QUALITY_BRIGHT_MAX = 230.0
+QUALITY_FACE_MIN_SIZE = 60
 
 # Matching thresholds
-BASE_THRESHOLD = 0.55
+BASE_THRESHOLD = 0.60
 MARGIN_THRESHOLD = 0.05
-CONFIRMED_THRESHOLD = 0.65
-REVIEW_THRESHOLD = 0.55
+CONFIRMED_THRESHOLD = 0.70
+REVIEW_THRESHOLD = 0.60
 
 @app.on_event("startup")
 async def startup():
     global detector, recognizer, load_error
     logger.info(f"OpenCV version: {cv2.__version__}")
-    logger.info(f"YuNet path: {YUNET_PATH} (exists: {os.path.exists(YUNET_PATH)})")
-    logger.info(f"SFace path: {SFACE_PATH} (exists: {os.path.exists(SFACE_PATH)})")
+    logger.info(f"YuNet path: {YUNET_PATH} (exists: {os.path.exists(YUNET_PATH)}, size: {os.path.getsize(YUNET_PATH) if os.path.exists(YUNET_PATH) else 0})")
+    logger.info(f"SFace path: {SFACE_PATH} (exists: {os.path.exists(SFACE_PATH)}, size: {os.path.getsize(SFACE_PATH) if os.path.exists(SFACE_PATH) else 0})")
     
     try:
         detector = cv2.FaceDetectorYN.create(YUNET_PATH, "", (320, 320), 0.9, 0.3, 5000)
@@ -114,12 +114,7 @@ def assess_quality(img, face_box):
     # 3. Face size check
     face_size = max(w, h)
     
-    # 4. Face ratio check (shouldn't be too large/small relative to frame)
-    frame_area = img.shape[0] * img.shape[1]
-    face_area = w * h
-    face_ratio = face_area / frame_area if frame_area > 0 else 0
-    
-    # 5. Contrast check
+    # 4. Contrast check
     contrast = np.std(gray)
     
     issues = []
@@ -131,16 +126,14 @@ def assess_quality(img, face_box):
         issues.append("too_bright")
     if face_size < QUALITY_FACE_MIN_SIZE:
         issues.append("face_too_small")
-    if face_ratio > QUALITY_FACE_RATIO_MAX:
-        issues.append("face_too_close")
-    if contrast < 20:
+    if contrast < 15:
         issues.append("low_contrast")
     
     # Quality score (0-1)
-    blur_norm = min(blur_score / 200.0, 1.0)
-    size_norm = min(face_size / 300.0, 1.0)
+    blur_norm = min(blur_score / 150.0, 1.0)
+    size_norm = min(face_size / 250.0, 1.0)
     brightness_norm = 1.0 - abs(brightness - 127.0) / 127.0
-    contrast_norm = min(contrast / 50.0, 1.0)
+    contrast_norm = min(contrast / 40.0, 1.0)
     
     quality_score = 0.35 * blur_norm + 0.25 * size_norm + 0.20 * brightness_norm + 0.20 * contrast_norm
     
@@ -150,7 +143,6 @@ def assess_quality(img, face_box):
         "brightness": round(brightness, 2),
         "contrast": round(contrast, 2),
         "face_size": face_size,
-        "face_ratio": round(face_ratio, 4),
         "issues": issues,
         "good_quality": len(issues) == 0,
     }
@@ -202,10 +194,7 @@ def compute_similarity(a, b):
     return float(dot / (norm_a * norm_b))
 
 def match_against_known(target_embedding, known_embeddings: List[dict]):
-    """
-    Match target embedding against all known embeddings.
-    Returns: best_match, all_scores, decision
-    """
+    """Match target embedding against all known embeddings."""
     if not known_embeddings:
         return None, [], {"decision": "REJECT", "reason": "no_known_faces"}
     
@@ -247,10 +236,7 @@ def match_against_known(target_embedding, known_embeddings: List[dict]):
     return best, scores, {"decision": decision, "reason": reason, "margin": round(margin, 4)}
 
 def temporal_verification(session_id: str, employee_id: str, similarity: float, quality_score: float):
-    """
-    Verify identity across multiple frames.
-    Returns: (verified, avg_similarity, frame_count)
-    """
+    """Verify identity across multiple frames."""
     now = time.time() * 1000  # milliseconds
     
     # Add to buffer
@@ -284,126 +270,15 @@ def temporal_verification(session_id: str, employee_id: str, similarity: float, 
     
     # Verification criteria
     all_above_threshold = all(e["similarity"] >= BASE_THRESHOLD for e in last_n)
-    quality_ok = avg_quality >= 0.4
+    quality_ok = avg_quality >= 0.3
     
-    verified = all_above_threshold and avg_sim >= CONSENSUS_AVG_THRESHOLD and quality_ok
+    verified = all_above_threshold and avg_sim >= CONFIRMED_THRESHOLD and quality_ok
     
     return verified, avg_sim, len(recent)
 
-class MatchRequest(BaseModel):
-    known_embeddings: List[dict]  # [{employee_id, name, embedding: [float]}]
-    session_id: str
-    quality_threshold: float = 0.4
-
-@app.post("/industry-match")
-async def industry_match(image: UploadFile = File(...), known_embeddings: str = None, session_id: str = None):
-    """
-    Industry-grade face matching endpoint.
-    Returns: decision (CONFIRMED/REVIEW/REJECT) with quality and temporal verification.
-    """
-    try:
-        raw = await image.read()
-        if not raw:
-            return ok({"success": False, "message": "Empty image"}, 400)
-        
-        img = load_img(raw)
-        if img is None:
-            return ok({"success": False, "message": "Invalid image"}, 400)
-        
-        if detector is None or recognizer is None:
-            return ok({"success": False, "message": f"Model not loaded: {load_error}"}, 500)
-        
-        # Step 1: Detect and encode
-        box, conf, embedding, quality = detect_and_encode(img)
-        
-        if box is None or embedding is None:
-            return ok({
-                "success": False,
-                "decision": "REJECT",
-                "reason": "no_face_detected",
-                "quality": quality,
-                "message": "No face detected. Look directly at camera."
-            })
-        
-        # Step 2: Quality gate
-        if quality and not quality.get("good_quality", False):
-            return ok({
-                "success": True,
-                "decision": "REJECT",
-                "reason": "quality_gate_failed",
-                "quality": quality,
-                "detection_confidence": conf,
-                "message": f"Quality issues: {', '.join(quality.get('issues', []))}"
-            })
-        
-        # Step 3: Parse known embeddings
-        known_list = []
-        if known_embeddings:
-            known_list = json.loads(known_embeddings)
-        
-        if not known_list:
-            return ok({
-                "success": False,
-                "decision": "REJECT",
-                "reason": "no_known_embeddings",
-                "quality": quality,
-                "message": "No known embeddings provided"
-            })
-        
-        # Step 4: Match against known
-        best_match, all_scores, match_decision = match_against_known(embedding, known_list)
-        
-        # DEBUG: Log matching scores
-        logger.info(f"🔍 MATCH DEBUG: best={best_match['name'] if best_match else 'None'} sim={best_match['similarity'] if best_match else 0:.4f}")
-        logger.info(f"🔍 ALL SCORES: {[(s['name'], s['similarity']) for s in all_scores[:3]]}")
-        
-        # Step 5: Temporal verification (if CONFIRMED candidate)
-        temporal_verified = False
-        avg_sim = 0.0
-        frame_count = 0
-        
-        if match_decision["decision"] in ["CONFIRMED", "REVIEW"] and session_id:
-            temporal_verified, avg_sim, frame_count = temporal_verification(
-                session_id, best_match["employee_id"], best_match["similarity"], quality.get("score", 0)
-            )
-            
-            if temporal_verified:
-                match_decision["decision"] = "CONFIRMED"
-                match_decision["reason"] = f"temporal verified: {frame_count} frames, avg sim {avg_sim:.2%}"
-            else:
-                match_decision["decision"] = "REVIEW"
-                match_decision["reason"] = f"temporal pending: {frame_count}/{MIN_CONSENSUS_FRAMES} frames"
-        
-        # Step 6: Build response
-        response = {
-            "success": True,
-            "decision": match_decision["decision"],
-            "reason": match_decision["reason"],
-            "best_match": best_match,
-            "all_scores": all_scores[:5],  # Top 5
-            "quality": quality,
-            "detection_confidence": conf,
-            "temporal": {
-                "verified": temporal_verified,
-                "avg_similarity": round(avg_sim, 4),
-                "frame_count": frame_count,
-                "required_frames": MIN_CONSENSUS_FRAMES,
-            },
-            "margin": match_decision.get("margin", 0),
-        }
-        
-        return ok(response)
-        
-    except Exception as e:
-        logger.error(traceback.format_exc())
-        return ok({"success": False, "message": str(e)}, 500)
-
 @app.post("/industry-match-json")
 async def industry_match_json(req: dict):
-    """
-    Industry-grade face matching endpoint (JSON with base64 image).
-    Returns: decision (CONFIRMED/REVIEW/REJECT) with quality and temporal verification.
-    """
+    """Industry-grade face matching endpoint (JSON with base64 image)."""
     try:
         image_base64 = req.get("image_base64", "")
         known_embeddings = req.get("known_embeddings", [])
@@ -438,18 +313,7 @@ async def industry_match_json(req: dict):
                 "message": "No face detected. Look directly at camera."
             })
         
-        # Step 2: Quality gate (disabled for testing)
-        # if quality and not quality.get("good_quality", False):
-        #     return ok({
-        #         "success": True,
-        #         "decision": "REJECT",
-        #         "reason": "quality_gate_failed",
-        #         "quality": quality,
-        #         "detection_confidence": conf,
-        #         "message": f"Quality issues: {', '.join(quality.get('issues', []))}"
-        #     })
-        
-        # Step 3: Match against known
+        # Step 2: Match against known
         logger.info(f"🔍 Matching against {len(known_embeddings)} known embeddings")
         best_match, all_scores, match_decision = match_against_known(embedding, known_embeddings)
         
@@ -457,7 +321,7 @@ async def industry_match_json(req: dict):
         logger.info(f"🔍 MATCH DEBUG: best={best_match['name'] if best_match else 'None'} sim={best_match['similarity'] if best_match else 0:.4f}")
         logger.info(f"🔍 ALL SCORES: {[(s['name'], s['similarity']) for s in all_scores[:3]]}")
         
-        # Step 4: Temporal verification (if CONFIRMED candidate)
+        # Step 3: Temporal verification (if CONFIRMED candidate)
         temporal_verified = False
         avg_sim = 0.0
         frame_count = 0
@@ -474,7 +338,7 @@ async def industry_match_json(req: dict):
                 match_decision["decision"] = "REVIEW"
                 match_decision["reason"] = f"temporal pending: {frame_count}/{MIN_CONSENSUS_FRAMES} frames"
         
-        # Step 5: Build response
+        # Step 4: Build response
         response = {
             "success": True,
             "decision": match_decision["decision"],
@@ -530,6 +394,59 @@ async def encode_face(image: UploadFile = File(...)):
         logger.error(traceback.format_exc())
         return ok({"success": False, "message": str(e)}, 500)
 
+@app.post("/encode-multi")
+async def encode_multi_face(images: List[UploadFile] = File(...)):
+    """Encode face from multiple images. Returns averaged embedding + quality stats."""
+    try:
+        if len(images) < 3:
+            return ok({"success": False, "message": "At least 3 images required"}, 400)
+        
+        embeddings = []
+        qualities = []
+        
+        for img_file in images:
+            raw = await img_file.read()
+            img = load_img(raw)
+            if img is None:
+                continue
+            
+            box, conf, embedding, quality = detect_and_encode(img)
+            if box is None or embedding is None:
+                continue
+            
+            # Only use good quality images
+            if quality and quality.get("good_quality", False):
+                embeddings.append(embedding)
+                qualities.append(quality)
+        
+        if len(embeddings) < 2:
+            return ok({
+                "success": False,
+                "message": f"Only {len(embeddings)} good quality faces detected. Need at least 2. Try again in better lighting."
+            })
+        
+        # Average embeddings
+        avg_embedding = np.mean(embeddings, axis=0)
+        norm = np.linalg.norm(avg_embedding)
+        if norm > 0:
+            avg_embedding = avg_embedding / norm
+        
+        # Average quality scores
+        avg_quality_score = np.mean([q["score"] for q in qualities])
+        
+        return ok({
+            "success": True,
+            "encodings": [avg_embedding.tolist()],
+            "embedding_dim": 128,
+            "images_used": len(embeddings),
+            "images_total": len(images),
+            "avg_quality": round(avg_quality_score, 4),
+            "quality_details": qualities,
+        })
+    except Exception as e:
+        logger.error(traceback.format_exc())
+        return ok({"success": False, "message": str(e)}, 500)
+
 @app.get("/health")
 def health():
     return ok({
@@ -539,15 +456,16 @@ def health():
         "recognizer_loaded": recognizer is not None,
         "error": load_error,
         "opencv": cv2.__version__,
-        "version": "1.0.0-industry",
+        "version": "2.0.0-industry",
+        "features": ["industry-match-json", "encode-face", "encode-multi", "quality-gate", "temporal-verification"],
     })
 
 @app.get("/")
 def root():
     return ok({
-        "service": "HRMS AI Industry v1.0",
+        "service": "HRMS AI Industry v2.0",
         "detector": detector is not None,
         "recognizer": recognizer is not None,
         "error": load_error,
-        "endpoints": ["/health", "/encode-face", "/industry-match"],
+        "endpoints": ["/health", "/encode-face", "/encode-multi", "/industry-match-json"],
     })

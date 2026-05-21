@@ -127,6 +127,43 @@ export async function aiIndustryMatch(imageBlob: Blob, knownEmbeddings: Array<{e
   }
 }
 
+export async function aiEncodeMulti(blobs: Blob[]): Promise<{
+  success: boolean;
+  encodings?: number[][];
+  message?: string;
+  embedding_dim?: number;
+  images_used?: number;
+  images_total?: number;
+  avg_quality?: number;
+}> {
+  try {
+    const api = await getApi();
+    const fd = new FormData();
+    blobs.forEach((blob, i) => {
+      fd.append("images", blob, `face_${i}.jpg`);
+    });
+    const res = await fetch(`${api}/encode-multi`, {
+      method: "POST",
+      body: fd,
+      signal: AbortSignal.timeout(30000),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      return { success: false, message: data.message || `Server ${res.status}` };
+    }
+    return {
+      success: true,
+      encodings: data.encodings,
+      embedding_dim: data.embedding_dim,
+      images_used: data.images_used,
+      images_total: data.images_total,
+      avg_quality: data.avg_quality,
+    };
+  } catch (e: any) {
+    return { success: false, message: e.name === "TimeoutError" ? "AI service timeout" : e.message };
+  }
+}
+
 export async function aiDetect(blob: Blob): Promise<{ count: number; locations?: number[][]; faces?: any[] }> {
   const fd = new FormData();
   fd.append("image", blob, "face.jpg");
