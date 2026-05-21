@@ -1,11 +1,15 @@
 "use client";
 
-const API = "/api/ai";
+// Auto-detect: use local AI service if available, fallback to cloud proxy
+const LOCAL_API = "http://localhost:8000";
+const CLOUD_API = "/api/ai";
+let useLocal = true;
 
 export interface QualityResult {
   score: number;
   blur: number;
   brightness: number;
+  contrast: number;
   face_size: number;
   face_ratio: number;
   issues: string[];
@@ -28,42 +32,42 @@ export interface MatchCandidate {
   similarity: number;
 }
 
-export interface AdvancedMatchResult {
-  classification: "CONFIRMED" | "REVIEW" | "REJECT";
+export interface IndustryMatchResult {
+  success: boolean;
+  decision: "CONFIRMED" | "REVIEW" | "REJECT";
   reason: string;
-  confidence_score: number;
-  cosine_similarity: number;
-  quality_score: number;
-  margin: number;
-  second_best_similarity: number;
+  best_match: MatchCandidate | null;
+  all_scores: MatchCandidate[];
+  quality: QualityResult | null;
+  detection_confidence: number;
   temporal: {
-    consistency: number;
-    frame_count: number;
-    avg_similarity: number;
-    std_deviation: number;
     verified: boolean;
+    avg_similarity: number;
+    frame_count: number;
+    required_frames: number;
   };
-  thresholds: {
-    base: number;
-    confirmed: number;
-    review: number;
-    margin_min: number;
-  };
-  matched_employee: {
-    id: string;
-    name: string | null;
-    index: number;
-  } | null;
-  top_scores: MatchCandidate[];
-  quality_gate_passed: boolean;
-  processing_time_ms: number;
+  margin: number;
+  message?: string;
+}
+
+async function getApi(): Promise<string> {
+  if (useLocal) {
+    try {
+      const res = await fetch(`${LOCAL_API}/health`, { signal: AbortSignal.timeout(2000) });
+      if (res.ok) return LOCAL_API;
+    } catch {
+      useLocal = false;
+    }
+  }
+  return CLOUD_API;
 }
 
 export async function aiEncode(blob: Blob): Promise<EncodeResult> {
   const fd = new FormData();
   fd.append("image", blob, "face.jpg");
   try {
-    const res = await fetch(`${API}/encode-face`, { method: "POST", body: fd, signal: AbortSignal.timeout(25000) });
+    const api = await getApi();
+    const res = await fetch(`${api}/encode-face`, { method: "POST", body: fd, signal: AbortSignal.timeout(25000) });
     const data = await res.json();
     if (!res.ok || !data.success) return { success: false, message: data.message || `Server ${res.status}` };
     return {
@@ -80,56 +84,46 @@ export async function aiEncode(blob: Blob): Promise<EncodeResult> {
   }
 }
 
-export async function aiAdvancedMatch(payload: {
-  known_embeddings: number[][];
-  known_ids: string[];
-  known_names: string[];
-  target_embedding: number[];
-  quality_score: number;
-  session_id: string;
-  num_enrolled: number;
-}): Promise<AdvancedMatchResult> {
+export async function aiIndustryMatch(imageBlob: Blob, knownEmbeddings: Array<{employee_id: string, name: string, embedding: number[]}>, sessionId: string): Promise<IndustryMatchResult> {
+  const fd = new FormData();
+  fd.append("image", imageBlob, "face.jpg");
+  fd.append("known_embeddings", JSON.stringify(knownEmbeddings));
+  fd.append("session_id", sessionId);
+  
   try {
-    const res = await fetch(`${API}/advanced-match`, {
+    const api = await getApi();
+    const res = await fetch(`${api}/industry-match`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body: fd,
       signal: AbortSignal.timeout(15000),
     });
     const data = await res.json();
-    if (!res.ok) {
+    if (!res.ok || !data.success) {
       return {
-        classification: "REJECT",
-        reason: data.reason || `Server error ${res.status}`,
-        confidence_score: 0,
-        cosine_similarity: 0,
-        quality_score: 0,
+        success: false,
+        decision: "REJECT",
+        reason: data.reason || data.message || "Match failed",
+        best_match: null,
+        all_scores: [],
+        quality: null,
+        detection_confidence: 0,
+        temporal: { verified: false, avg_similarity: 0, frame_count: 0, required_frames: 5 },
         margin: 0,
-        second_best_similarity: 0,
-        temporal: { consistency: 0, frame_count: 0, avg_similarity: 0, std_deviation: 0, verified: false },
-        thresholds: { base: 0, confirmed: 0, review: 0, margin_min: 0 },
-        matched_employee: null,
-        top_scores: [],
-        quality_gate_passed: false,
-        processing_time_ms: 0,
+        message: data.message,
       };
     }
-    return data as AdvancedMatchResult;
+    return data as IndustryMatchResult;
   } catch (e: any) {
     return {
-      classification: "REJECT",
+      success: false,
+      decision: "REJECT",
       reason: e.name === "TimeoutError" ? "AI service timeout" : e.message,
-      confidence_score: 0,
-      cosine_similarity: 0,
-      quality_score: 0,
+      best_match: null,
+      all_scores: [],
+      quality: null,
+      detection_confidence: 0,
+      temporal: { verified: false, avg_similarity: 0, frame_count: 0, required_frames: 5 },
       margin: 0,
-      second_best_similarity: 0,
-      temporal: { consistency: 0, frame_count: 0, avg_similarity: 0, std_deviation: 0, verified: false },
-      thresholds: { base: 0, confirmed: 0, review: 0, margin_min: 0 },
-      matched_employee: null,
-      top_scores: [],
-      quality_gate_passed: false,
-      processing_time_ms: 0,
     };
   }
 }
@@ -138,7 +132,8 @@ export async function aiDetect(blob: Blob): Promise<{ count: number; locations?:
   const fd = new FormData();
   fd.append("image", blob, "face.jpg");
   try {
-    const res = await fetch(`${API}/detect`, { method: "POST", body: fd, signal: AbortSignal.timeout(15000) });
+    const api = await getApi();
+    const res = await fetch(`${api}/detect`, { method: "POST", body: fd, signal: AbortSignal.timeout(15000) });
     if (!res.ok) return { count: 0 };
     return await res.json();
   } catch { return { count: 0 }; }
@@ -146,7 +141,8 @@ export async function aiDetect(blob: Blob): Promise<{ count: number; locations?:
 
 export async function aiHealth(): Promise<boolean> {
   try {
-    const res = await fetch(`${API}/health`, { signal: AbortSignal.timeout(5000) });
+    const api = await getApi();
+    const res = await fetch(`${api}/health`, { signal: AbortSignal.timeout(5000) });
     return res.ok;
   } catch { return false; }
 }
