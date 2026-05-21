@@ -85,16 +85,25 @@ export async function aiEncode(blob: Blob): Promise<EncodeResult> {
 }
 
 export async function aiIndustryMatch(imageBlob: Blob, knownEmbeddings: Array<{employee_id: string, name: string, embedding: number[]}>, sessionId: string): Promise<IndustryMatchResult> {
-  const fd = new FormData();
-  fd.append("image", imageBlob, "face.jpg");
-  fd.append("known_embeddings", JSON.stringify(knownEmbeddings));
-  fd.append("session_id", sessionId);
+  // Convert image to base64 and send as JSON
+  const reader = new FileReader();
+  const base64Promise = new Promise<string>((resolve, reject) => {
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(imageBlob);
+  });
   
   try {
+    const base64 = await base64Promise;
     const api = await getApi();
-    const res = await fetch(`${api}/industry-match`, {
+    const res = await fetch(`${api}/industry-match-json`, {
       method: "POST",
-      body: fd,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        image_base64: base64,
+        known_embeddings: knownEmbeddings,
+        session_id: sessionId,
+      }),
       signal: AbortSignal.timeout(15000),
     });
     const data = await res.json();

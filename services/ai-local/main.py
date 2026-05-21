@@ -14,6 +14,7 @@ import os
 import logging
 import traceback
 import time
+import base64
 from collections import defaultdict
 import json
 
@@ -48,10 +49,10 @@ QUALITY_FACE_MIN_SIZE = 80
 QUALITY_FACE_RATIO_MAX = 0.8
 
 # Matching thresholds
-BASE_THRESHOLD = 0.82
-MARGIN_THRESHOLD = 0.12
-CONFIRMED_THRESHOLD = 0.88
-REVIEW_THRESHOLD = 0.82
+BASE_THRESHOLD = 0.60
+MARGIN_THRESHOLD = 0.05
+CONFIRMED_THRESHOLD = 0.70
+REVIEW_THRESHOLD = 0.60
 
 @app.on_event("startup")
 async def startup():
@@ -352,6 +353,10 @@ async def industry_match(image: UploadFile = File(...), known_embeddings: str = 
         # Step 4: Match against known
         best_match, all_scores, match_decision = match_against_known(embedding, known_list)
         
+        # DEBUG: Log matching scores
+        logger.info(f"🔍 MATCH DEBUG: best={best_match['name'] if best_match else 'None'} sim={best_match['similarity'] if best_match else 0:.4f}")
+        logger.info(f"🔍 ALL SCORES: {[(s['name'], s['similarity']) for s in all_scores[:3]]}")
+        
         # Step 5: Temporal verification (if CONFIRMED candidate)
         temporal_verified = False
         avg_sim = 0.0
@@ -376,6 +381,106 @@ async def industry_match(image: UploadFile = File(...), known_embeddings: str = 
             "reason": match_decision["reason"],
             "best_match": best_match,
             "all_scores": all_scores[:5],  # Top 5
+            "quality": quality,
+            "detection_confidence": conf,
+            "temporal": {
+                "verified": temporal_verified,
+                "avg_similarity": round(avg_sim, 4),
+                "frame_count": frame_count,
+                "required_frames": MIN_CONSENSUS_FRAMES,
+            },
+            "margin": match_decision.get("margin", 0),
+        }
+        
+        return ok(response)
+        
+    except Exception as e:
+        logger.error(traceback.format_exc())
+        return ok({"success": False, "message": str(e)}, 500)
+
+@app.post("/industry-match-json")
+async def industry_match_json(req: dict):
+    """
+    Industry-grade face matching endpoint (JSON with base64 image).
+    Returns: decision (CONFIRMED/REVIEW/REJECT) with quality and temporal verification.
+    """
+    try:
+        image_base64 = req.get("image_base64", "")
+        known_embeddings = req.get("known_embeddings", [])
+        session_id = req.get("session_id", "")
+        
+        logger.info(f"🔍 industry-match-json: known_embeddings count={len(known_embeddings)}, session_id={session_id}")
+        
+        if not image_base64:
+            return ok({"success": False, "message": "No image provided"}, 400)
+        
+        # Decode base64 image
+        if "," in image_base64:
+            image_base64 = image_base64.split(",")[1]
+        raw = base64.b64decode(image_base64)
+        
+        img = load_img(raw)
+        if img is None:
+            return ok({"success": False, "message": "Invalid image"}, 400)
+        
+        if detector is None or recognizer is None:
+            return ok({"success": False, "message": f"Model not loaded: {load_error}"}, 500)
+        
+        # Step 1: Detect and encode
+        box, conf, embedding, quality = detect_and_encode(img)
+        
+        if box is None or embedding is None:
+            return ok({
+                "success": False,
+                "decision": "REJECT",
+                "reason": "no_face_detected",
+                "quality": quality,
+                "message": "No face detected. Look directly at camera."
+            })
+        
+        # Step 2: Quality gate
+        if quality and not quality.get("good_quality", False):
+            return ok({
+                "success": True,
+                "decision": "REJECT",
+                "reason": "quality_gate_failed",
+                "quality": quality,
+                "detection_confidence": conf,
+                "message": f"Quality issues: {', '.join(quality.get('issues', []))}"
+            })
+        
+        # Step 3: Match against known
+        logger.info(f"🔍 Matching against {len(known_embeddings)} known embeddings")
+        best_match, all_scores, match_decision = match_against_known(embedding, known_embeddings)
+        
+        # DEBUG: Log matching scores
+        logger.info(f"🔍 MATCH DEBUG: best={best_match['name'] if best_match else 'None'} sim={best_match['similarity'] if best_match else 0:.4f}")
+        logger.info(f"🔍 ALL SCORES: {[(s['name'], s['similarity']) for s in all_scores[:3]]}")
+        
+        # Step 4: Temporal verification (if CONFIRMED candidate)
+        temporal_verified = False
+        avg_sim = 0.0
+        frame_count = 0
+        
+        if match_decision["decision"] in ["CONFIRMED", "REVIEW"] and session_id:
+            temporal_verified, avg_sim, frame_count = temporal_verification(
+                session_id, best_match["employee_id"], best_match["similarity"], quality.get("score", 0)
+            )
+            
+            if temporal_verified:
+                match_decision["decision"] = "CONFIRMED"
+                match_decision["reason"] = f"temporal verified: {frame_count} frames, avg sim {avg_sim:.2%}"
+            else:
+                match_decision["decision"] = "REVIEW"
+                match_decision["reason"] = f"temporal pending: {frame_count}/{MIN_CONSENSUS_FRAMES} frames"
+        
+        # Step 5: Build response
+        response = {
+            "success": True,
+            "decision": match_decision["decision"],
+            "reason": match_decision["reason"],
+            "best_match": best_match,
+            "all_scores": all_scores[:5],
             "quality": quality,
             "detection_confidence": conf,
             "temporal": {
