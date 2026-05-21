@@ -26,11 +26,10 @@ logger = logging.getLogger("hrms-ai-industry")
 app = FastAPI(title="HRMS AI Industry v2.0", version="2.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# Model paths
+# Model paths - models are in the same directory as main.py
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODELS_DIR = os.path.join(BASE_DIR, "models")
-YUNET_PATH = os.path.join(MODELS_DIR, "yunet.onnx")
-SFACE_PATH = os.path.join(MODELS_DIR, "sface.onnx")
+YUNET_PATH = os.path.join(BASE_DIR, "yunet.onnx")
+SFACE_PATH = os.path.join(BASE_DIR, "sface.onnx")
 
 # Global state
 detector = None
