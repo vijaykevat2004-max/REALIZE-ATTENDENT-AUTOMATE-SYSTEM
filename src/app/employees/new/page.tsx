@@ -1,7 +1,6 @@
 "use client";
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import Sidebar from "@/components/Sidebar";
-import FaceCapture from "@/components/FaceCapture";
 import { AuthProvider, useAuth } from "@/components/AuthProvider";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
@@ -15,24 +14,44 @@ function EmployeeForm() {
   const [faceStatus, setFaceStatus] = useState<"idle" | "encoding" | "done" | "error">("idle");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
-  const [captureCount, setCaptureCount] = useState(0);
+  const [cameraActive, setCameraActive] = useState(false);
+  const [cameraReady, setCameraReady] = useState(false);
   const [qualityInfo, setQualityInfo] = useState("");
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
 
-  const fields = [
-    { label: "First Name", key: "firstName", required: true },
-    { label: "Last Name", key: "lastName", required: true },
-    { label: "Email", key: "email", type: "email", required: true },
-    { label: "Mobile", key: "mobile", type: "tel" },
-    { label: "Department", key: "department" },
-  ];
+  const startCamera = useCallback(async () => {
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: 640, height: 480 } });
+      streamRef.current = s;
+      setCameraActive(true);
+      if (videoRef.current) {
+        videoRef.current.srcObject = s;
+        videoRef.current.play().then(async () => {
+          for (let i = 0; i < 50; i++) {
+            if (videoRef.current!.videoWidth > 0 && videoRef.current!.videoHeight > 0) break;
+            await new Promise(r => setTimeout(r, 100));
+          }
+          setCameraReady(true);
+        });
+      }
+    } catch { alert("Camera access denied"); }
+  }, []);
+
+  const stopCamera = useCallback(() => {
+    streamRef.current?.getTracks().forEach(t => t.stop());
+    streamRef.current = null;
+    setCameraActive(false);
+    setCameraReady(false);
+  }, []);
+
+  useEffect(() => () => { streamRef.current?.getTracks().forEach(t => t.stop()); }, []);
 
   const captureFace = () => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    if (!video || !canvas) return;
-    if (!video.videoWidth || !video.videoHeight) return;
+    if (!video || !canvas || !cameraReady) return;
     
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
@@ -44,10 +63,17 @@ function EmployeeForm() {
     canvas.toBlob((blob) => {
       if (blob) {
         setBlobs(prev => [...prev, blob]);
-        setCaptureCount(prev => prev + 1);
       }
     }, "image/jpeg", 0.92);
   };
+
+  const fields = [
+    { label: "First Name", key: "firstName", required: true },
+    { label: "Last Name", key: "lastName", required: true },
+    { label: "Email", key: "email", type: "email", required: true },
+    { label: "Mobile", key: "mobile", type: "tel" },
+    { label: "Department", key: "department" },
+  ];
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -60,6 +86,7 @@ function EmployeeForm() {
         return;
       }
       setFaceStatus("encoding");
+      stopCamera();
       const enc = await aiEncodeMulti(blobs);
       if (!enc.success || !enc.encodings?.length) throw new Error(enc.message || "No face detected in captures");
       
@@ -122,14 +149,27 @@ function EmployeeForm() {
               Capture 5 photos from different angles for best accuracy
             </p>
             <div style={{ position: "relative" }}>
-              <video ref={videoRef} autoPlay playsInline muted style={{ width: "100%", borderRadius: 8 }} />
+              <video ref={videoRef} autoPlay playsInline muted style={{ width: "100%", borderRadius: 8, display: cameraActive ? "block" : "none" }} />
               <canvas ref={canvasRef} style={{ display: "none" }} />
+              {!cameraActive && (
+                <div style={{ padding: 40, textAlign: "center", background: "var(--page-secondary)", borderRadius: 8 }}>
+                  <div style={{ fontSize: 48, marginBottom: 8 }}>📷</div>
+                  <div>Camera off</div>
+                </div>
+              )}
             </div>
             <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-              <button className="btn btn-primary" onClick={captureFace} disabled={blobs.length >= 5}>
-                📸 Capture ({5 - blobs.length} left)
-              </button>
-              <button className="btn btn-outline" onClick={() => { setBlobs([]); setCaptureCount(0); }}>
+              {!cameraActive ? (
+                <button className="btn btn-primary" onClick={startCamera}>📷 Start Camera</button>
+              ) : (
+                <>
+                  <button className="btn btn-success" onClick={captureFace} disabled={!cameraReady || blobs.length >= 5}>
+                    📸 Capture ({5 - blobs.length} left)
+                  </button>
+                  <button className="btn btn-danger" onClick={stopCamera}>Stop</button>
+                </>
+              )}
+              <button className="btn btn-outline" onClick={() => { setBlobs([]); setQualityInfo(""); }}>
                 🔄 Reset
               </button>
             </div>
