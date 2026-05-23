@@ -45,6 +45,15 @@ export interface IndustryMatchResult {
     required_frames: number;
   };
   margin: number;
+  scene?: {
+    face_count: number;
+    ambiguous_scene: boolean;
+  };
+  liveness?: {
+    score: number;
+    issues: string[];
+    live: boolean;
+  };
   message?: string;
 }
 
@@ -145,7 +154,7 @@ export async function aiEncodeMulti(blobs: Blob[]): Promise<{
     const res = await fetch(`${api}/encode-multi`, {
       method: "POST",
       body: fd,
-      signal: AbortSignal.timeout(90000), // 90 seconds for multi-image (Render free tier is slow)
+      signal: AbortSignal.timeout(55000), // API proxy max is 60s
     });
     const data = await res.json();
     if (!res.ok || !data.success) {
@@ -160,7 +169,7 @@ export async function aiEncodeMulti(blobs: Blob[]): Promise<{
       avg_quality: data.avg_quality,
     };
   } catch (e: any) {
-    return { success: false, message: e.name === "TimeoutError" ? "AI service timeout (90s) - Render is waking up, try again in 30 seconds" : e.message };
+    return { success: false, message: e.name === "TimeoutError" ? "AI service timeout (55s) - Render may be waking up, retry in 20-30 seconds" : e.message };
   }
 }
 

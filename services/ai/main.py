@@ -23,7 +23,7 @@ import json
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("hrms-ai-industry")
 
-app = FastAPI(title="HRMS AI Industry v2.0", version="2.0.0")
+app = FastAPI(title="HRMS AI Industry v4.0 Strict", version="4.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # Model paths - models are in the same directory as main.py
@@ -39,19 +39,69 @@ load_error = ""
 # Temporal buffer for verification
 TEMPORAL_BUFFER: Dict[str, List[dict]] = defaultdict(list)
 TEMPORAL_WINDOW_MS = 10000  # 10 seconds
-MIN_CONSENSUS_FRAMES = 5
+MIN_CONSENSUS_FRAMES = 7
 
 # Quality thresholds
 QUALITY_BLUR_MIN = 50.0
 QUALITY_BRIGHT_MIN = 30.0
 QUALITY_BRIGHT_MAX = 230.0
 QUALITY_FACE_MIN_SIZE = 60
+MAX_SECOND_FACE_SCORE_RATIO = 0.92
 
-# Matching thresholds
-BASE_THRESHOLD = 0.60
-MARGIN_THRESHOLD = 0.05
-CONFIRMED_THRESHOLD = 0.70
-REVIEW_THRESHOLD = 0.60
+# Matching thresholds (strict mode to avoid unknown-face false accepts)
+BASE_THRESHOLD = 0.72
+MARGIN_THRESHOLD = 0.18
+CONFIRMED_THRESHOLD = 0.88
+REVIEW_THRESHOLD = 0.84
+MIN_DETECTION_CONFIDENCE = 0.90
+MIN_MATCH_QUALITY_SCORE = 0.45
+MAX_SECOND_BEST_SIMILARITY = 0.74
+MIN_LIVENESS_SCORE = 0.55
+
+
+def assess_liveness(img, face_box):
+    """Heuristic liveness score for RGB-only camera.
+    Returns score [0..1] and reasons; low score gets rejected.
+    """
+    x, y, w, h = [int(v) for v in face_box[:4]]
+    x, y = max(0, x), max(0, y)
+    roi = img[y:y+h, x:x+w]
+    if roi.size == 0:
+        return {"score": 0.0, "issues": ["no_face_roi"], "live": False}
+
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+
+    # Texture energy: screens/prints tend to have flatter skin texture.
+    lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    texture_score = min(lap_var / 180.0, 1.0)
+
+    # Histogram spread: replays often collapse dynamic range.
+    p5 = float(np.percentile(gray, 5))
+    p95 = float(np.percentile(gray, 95))
+    spread = max(0.0, p95 - p5)
+    spread_score = min(spread / 100.0, 1.0)
+
+    # Saturated glare ratio: displays/paper often create hotspot clipping.
+    sat_ratio = float(np.mean(gray >= 245))
+    glare_score = max(0.0, 1.0 - min(sat_ratio / 0.12, 1.0))
+
+    score = 0.45 * texture_score + 0.35 * spread_score + 0.20 * glare_score
+    issues = []
+    if texture_score < 0.30:
+        issues.append("low_texture")
+    if spread_score < 0.30:
+        issues.append("flat_dynamic_range")
+    if glare_score < 0.35:
+        issues.append("excessive_glare")
+
+    return {
+        "score": round(float(score), 4),
+        "texture": round(texture_score, 4),
+        "spread": round(spread_score, 4),
+        "glare": round(glare_score, 4),
+        "issues": issues,
+        "live": score >= MIN_LIVENESS_SCORE and len(issues) <= 1,
+    }
 
 @app.on_event("startup")
 async def startup():
@@ -149,20 +199,43 @@ def assess_quality(img, face_box):
 def detect_and_encode(img):
     """Detect face and generate embedding with quality assessment"""
     if detector is None or recognizer is None:
-        return None, 0, None, None
+        return None, 0, None, None, {"face_count": 0, "ambiguous_scene": False}
     
     h, w = img.shape[:2]
     if h < 30 or w < 30:
-        return None, 0, None, None
+        return None, 0, None, None, {"face_count": 0, "ambiguous_scene": False}
     
     detector.setInputSize((w, h))
     _, faces = detector.detect(img)
     
     if faces is None or len(faces) == 0:
-        return None, 0, None, None
-    
-    # Use the face with highest confidence
-    best = max(faces, key=lambda f: f[14])
+        return None, 0, None, None, {"face_count": 0, "ambiguous_scene": False}
+
+    face_count = len(faces)
+    cx, cy = (w / 2.0), (h / 2.0)
+
+    # Prefer center + larger face to avoid matching background faces.
+    scored = []
+    for f in faces:
+        fx, fy, fw, fh = [float(v) for v in f[:4]]
+        conf = float(f[14])
+        fcx, fcy = fx + fw / 2.0, fy + fh / 2.0
+        center_dist = ((fcx - cx) ** 2 + (fcy - cy) ** 2) ** 0.5
+        center_norm = center_dist / max((cx**2 + cy**2) ** 0.5, 1.0)
+        area_norm = min((fw * fh) / float(max(w * h, 1)), 1.0)
+        scene_score = (0.50 * conf) + (0.35 * (1.0 - center_norm)) + (0.15 * area_norm)
+        scored.append((scene_score, f))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    best = scored[0][1]
+
+    ambiguous_scene = False
+    if len(scored) > 1:
+        top = scored[0][0]
+        second = scored[1][0]
+        if top > 0 and (second / top) >= MAX_SECOND_FACE_SCORE_RATIO:
+            ambiguous_scene = True
+
     conf = float(best[14])
     
     # Quality assessment
@@ -179,7 +252,10 @@ def detect_and_encode(img):
         embedding = embedding / norm
     
     box = [int(best[0]), int(best[1]), int(best[2]), int(best[3])]
-    return box, conf, embedding.flatten().astype(np.float32), quality
+    return box, conf, embedding.flatten().astype(np.float32), quality, {
+        "face_count": face_count,
+        "ambiguous_scene": ambiguous_scene,
+    }
 
 def compute_similarity(a, b):
     """Cosine similarity between two embeddings"""
@@ -215,10 +291,13 @@ def match_against_known(target_embedding, known_embeddings: List[dict]):
     # Margin check
     margin = best["similarity"] - second_best["similarity"]
     
-    # Decision logic
+    # Decision logic (strict)
     if best["similarity"] < BASE_THRESHOLD:
         decision = "REJECT"
         reason = f"similarity {best['similarity']:.2%} < threshold {BASE_THRESHOLD:.2%}"
+    elif len(scores) > 1 and second_best["similarity"] > MAX_SECOND_BEST_SIMILARITY:
+        decision = "REJECT"
+        reason = f"second-best {second_best['similarity']:.2%} > max {MAX_SECOND_BEST_SIMILARITY:.2%}"
     elif margin < MARGIN_THRESHOLD and len(scores) > 1:
         decision = "REJECT"
         reason = f"margin {margin:.2%} < min {MARGIN_THRESHOLD:.2%} (ambiguous)"
@@ -301,7 +380,7 @@ async def industry_match_json(req: dict):
             return ok({"success": False, "message": f"Model not loaded: {load_error}"}, 500)
         
         # Step 1: Detect and encode
-        box, conf, embedding, quality = detect_and_encode(img)
+        box, conf, embedding, quality, scene = detect_and_encode(img)
         
         if box is None or embedding is None:
             return ok({
@@ -310,6 +389,103 @@ async def industry_match_json(req: dict):
                 "reason": "no_face_detected",
                 "quality": quality,
                 "message": "No face detected. Look directly at camera."
+            })
+
+        if scene.get("face_count", 0) != 1:
+            return ok({
+                "success": True,
+                "decision": "REJECT",
+                "reason": f"exactly_one_face_required: found {scene.get('face_count', 0)}",
+                "best_match": None,
+                "all_scores": [],
+                "quality": quality,
+                "detection_confidence": conf,
+                "temporal": {
+                    "verified": False,
+                    "avg_similarity": 0.0,
+                    "frame_count": 0,
+                    "required_frames": MIN_CONSENSUS_FRAMES,
+                },
+                "margin": 0,
+                "scene": scene,
+            })
+
+        if scene.get("ambiguous_scene", False):
+            return ok({
+                "success": True,
+                "decision": "REJECT",
+                "reason": "multiple_faces_ambiguous_scene",
+                "best_match": None,
+                "all_scores": [],
+                "quality": quality,
+                "detection_confidence": conf,
+                "temporal": {
+                    "verified": False,
+                    "avg_similarity": 0.0,
+                    "frame_count": 0,
+                    "required_frames": MIN_CONSENSUS_FRAMES,
+                },
+                "margin": 0,
+                "scene": scene,
+            })
+
+        # Hard quality gates before matching
+        if conf < MIN_DETECTION_CONFIDENCE:
+            return ok({
+                "success": True,
+                "decision": "REJECT",
+                "reason": f"detection confidence {conf:.2%} < min {MIN_DETECTION_CONFIDENCE:.2%}",
+                "best_match": None,
+                "all_scores": [],
+                "quality": quality,
+                "detection_confidence": conf,
+                "temporal": {
+                    "verified": False,
+                    "avg_similarity": 0.0,
+                    "frame_count": 0,
+                    "required_frames": MIN_CONSENSUS_FRAMES,
+                },
+                "margin": 0,
+            })
+
+        if quality is None or quality.get("score", 0.0) < MIN_MATCH_QUALITY_SCORE:
+            return ok({
+                "success": True,
+                "decision": "REJECT",
+                "reason": f"face quality {quality.get('score', 0.0) if quality else 0.0:.2f} < min {MIN_MATCH_QUALITY_SCORE:.2f}",
+                "best_match": None,
+                "all_scores": [],
+                "quality": quality,
+                "detection_confidence": conf,
+                "temporal": {
+                    "verified": False,
+                    "avg_similarity": 0.0,
+                    "frame_count": 0,
+                    "required_frames": MIN_CONSENSUS_FRAMES,
+                },
+                "margin": 0,
+                "scene": scene,
+            })
+
+        liveness = assess_liveness(img, box)
+        if not liveness.get("live", False):
+            return ok({
+                "success": True,
+                "decision": "REJECT",
+                "reason": f"liveness_failed score {liveness.get('score', 0.0):.2f} < {MIN_LIVENESS_SCORE:.2f}",
+                "best_match": None,
+                "all_scores": [],
+                "quality": quality,
+                "detection_confidence": conf,
+                "temporal": {
+                    "verified": False,
+                    "avg_similarity": 0.0,
+                    "frame_count": 0,
+                    "required_frames": MIN_CONSENSUS_FRAMES,
+                },
+                "margin": 0,
+                "scene": scene,
+                "liveness": liveness,
             })
         
         # Step 2: Match against known
@@ -334,8 +510,11 @@ async def industry_match_json(req: dict):
                 match_decision["decision"] = "CONFIRMED"
                 match_decision["reason"] = f"temporal verified: {frame_count} frames, avg sim {avg_sim:.2%}"
             else:
-                match_decision["decision"] = "REVIEW"
-                match_decision["reason"] = f"temporal pending: {frame_count}/{MIN_CONSENSUS_FRAMES} frames"
+                match_decision["decision"] = "REJECT"
+                match_decision["reason"] = f"temporal not verified: {frame_count}/{MIN_CONSENSUS_FRAMES} frames"
+        elif match_decision["decision"] in ["CONFIRMED", "REVIEW"]:
+            match_decision["decision"] = "REJECT"
+            match_decision["reason"] = "missing session_id for temporal verification"
         
         # Step 4: Build response
         response = {
@@ -353,6 +532,8 @@ async def industry_match_json(req: dict):
                 "required_frames": MIN_CONSENSUS_FRAMES,
             },
             "margin": match_decision.get("margin", 0),
+            "scene": scene,
+            "liveness": liveness,
         }
         
         return ok(response)
@@ -376,7 +557,7 @@ async def encode_face(image: UploadFile = File(...)):
         if detector is None or recognizer is None:
             return ok({"success": False, "message": f"Model not loaded: {load_error}"}, 500)
         
-        box, conf, embedding, quality = detect_and_encode(img)
+        box, conf, embedding, quality, scene = detect_and_encode(img)
         
         if box is None or embedding is None:
             return ok({"success": False, "message": "No face detected. Look directly at camera."})
@@ -388,6 +569,7 @@ async def encode_face(image: UploadFile = File(...)):
             "confidence": round(conf, 3),
             "embedding_dim": 128,
             "quality": quality,
+            "scene": scene,
         })
     except Exception as e:
         logger.error(traceback.format_exc())
@@ -409,8 +591,10 @@ async def encode_multi_face(images: List[UploadFile] = File(...)):
             if img is None:
                 continue
             
-            box, conf, embedding, quality = detect_and_encode(img)
+            box, conf, embedding, quality, scene = detect_and_encode(img)
             if box is None or embedding is None:
+                continue
+            if scene.get("face_count", 0) != 1 or scene.get("ambiguous_scene", False):
                 continue
             
             # Only use good quality images
@@ -450,13 +634,13 @@ async def encode_multi_face(images: List[UploadFile] = File(...)):
 def health():
     return ok({
         "ok": detector is not None and recognizer is not None,
-        "model": "yunet+sface-industry",
+        "model": "yunet+sface-industry-strict",
         "detector_loaded": detector is not None,
         "recognizer_loaded": recognizer is not None,
         "error": load_error,
         "opencv": cv2.__version__,
-        "version": "2.0.0-industry",
-        "features": ["industry-match-json", "encode-face", "encode-multi", "quality-gate", "temporal-verification"],
+        "version": "4.0.0-industry-strict",
+        "features": ["industry-match-json", "encode-face", "encode-multi", "quality-gate", "temporal-verification", "single-face-gate", "liveness-gate"],
     })
 
 @app.get("/")

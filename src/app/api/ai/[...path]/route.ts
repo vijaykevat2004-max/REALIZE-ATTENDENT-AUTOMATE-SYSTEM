@@ -3,6 +3,8 @@ import { NextRequest, NextResponse } from "next/server";
 // Use environment variable for AI service URL, fallback to Render
 const AI_BASE = process.env.AI_SERVICE_URL || "https://hrms-ai-abv8.onrender.com";
 
+export const maxDuration = 60;
+
 export async function GET(request: NextRequest, { params }: { params: { path: string[] } }) {
   return proxy(request, params.path, "GET");
 }
@@ -18,6 +20,7 @@ export async function OPTIONS(request: NextRequest, { params }: { params: { path
 async function proxy(request: NextRequest, path: string[], method: string) {
   const pathStr = path.join("/");
   const url = `${AI_BASE}/${pathStr}`;
+  const timeoutMs = pathStr === "encode-multi" ? 55000 : 25000;
 
   try {
     const ct = request.headers.get("content-type") || "";
@@ -37,7 +40,7 @@ async function proxy(request: NextRequest, path: string[], method: string) {
     const fetchOpts: RequestInit & { duplex?: string } = {
       method,
       headers: { ...headers, accept: "application/json" },
-      signal: AbortSignal.timeout(25000),
+      signal: AbortSignal.timeout(timeoutMs),
     };
     if (body) {
       fetchOpts.body = body;
@@ -56,8 +59,11 @@ async function proxy(request: NextRequest, path: string[], method: string) {
       },
     });
   } catch (e: any) {
+    const message = e.name === "TimeoutError"
+      ? `AI service timeout after ${Math.round(timeoutMs / 1000)}s`
+      : e.message || "Proxy failed";
     return NextResponse.json(
-      { error: e.message || "Proxy failed" },
+      { error: message, message },
       { status: 502 }
     );
   }

@@ -27,6 +27,8 @@ interface DetectionInfo {
 
 const MARK_COOLDOWN = 15000;
 const CAPTURE_INTERVAL = 1000;
+const CLIENT_MIN_CONFIRMED_SIMILARITY = 0.88;
+const CLIENT_MIN_MARGIN = 0.18;
 const MOTION_THRESHOLD = 3;
 const MOTION_FRAME_W = 80;
 const MOTION_FRAME_H = 60;
@@ -265,6 +267,16 @@ function KioskContent() {
           empName: result.best_match?.name || "Unknown",
           confidence: result.best_match ? Math.round(result.best_match.similarity * 100) : 0,
           message: `⚠️ REVIEW — ${result.best_match?.name || "Unknown"} (${result.best_match?.similarity ? (result.best_match.similarity * 100).toFixed(1) : 0}%) — ${result.reason}` });
+        return;
+      }
+
+      // CONFIRMED (client hard gates as second safety layer)
+      if (!result.best_match || result.best_match.similarity < CLIENT_MIN_CONFIRMED_SIMILARITY || result.margin < CLIENT_MIN_MARGIN) {
+        setDebugOverlay(d => ({ ...d, status: "❌ REJECTED", error: "client safety gate blocked weak match" }));
+        addDet({ time: checkTime, type: "fail", faceCount: 1,
+          empName: result.best_match?.name || "UNKNOWN",
+          confidence: result.best_match ? Math.round(result.best_match.similarity * 100) : 0,
+          message: `❌ CLIENT GATE — similarity ${(result.best_match?.similarity ? (result.best_match.similarity * 100).toFixed(1) : 0)}%, margin ${(result.margin * 100).toFixed(1)}%` });
         return;
       }
 
