@@ -68,6 +68,11 @@ function KioskContent() {
   const [liveScores, setLiveScores] = useState<{ name: string; sim: number }[]>([]);
   const [lastDecision, setLastDecision] = useState<string>("");
   const [lastQuality, setLastQuality] = useState<string>("");
+  const [qrInput, setQrInput] = useState("");
+  const [qrLoading, setQrLoading] = useState(false);
+  const [qrAutoScan, setQrAutoScan] = useState(false);
+  const [qrSupported, setQrSupported] = useState(false);
+  const lastQrScanAtRef = useRef(0);
 
   const addDet = (d: DetectionInfo) => {
     setDetections((prev) => [d, ...prev].slice(0, 100));
@@ -194,6 +199,11 @@ function KioskContent() {
       autoStart();
     }
   }, [token, authLoading, known.length, active, autoStart]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setQrSupported("BarcodeDetector" in window);
+  }, []);
 
   const detectMotion = (): boolean => {
     const video = videoRef.current;
@@ -384,6 +394,99 @@ function KioskContent() {
     setCamStatus("stopped");
   };
 
+  const markByQr = async () => {
+    if (!token || !qrInput.trim() || qrLoading) return;
+    setQrLoading(true);
+    const now = new Date().toLocaleTimeString();
+    try {
+      const res = await fetch("/api/attendance/qr-mark", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ qrData: qrInput.trim() }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success) {
+        addDet({ time: now, type: "fail", message: `❌ QR failed: ${data?.error || res.status}` });
+        return;
+      }
+      addDet({
+        time: now,
+        type: "mark",
+        empName: data.employeeName,
+        empCode: data.employeeCode,
+        message: `✅ QR ${data.type === "CHECK_IN" ? "CHECK-IN" : "CHECK-OUT"} — ${data.employeeName} (${data.employeeCode}) at ${data.time}`,
+      });
+      setQrInput("");
+      fetchSheet();
+    } catch (e: any) {
+      addDet({ time: now, type: "fail", message: `❌ QR error: ${e.message || "Unknown error"}` });
+    } finally {
+      setQrLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!qrAutoScan || !active || !token) return;
+    let mounted = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const scanLoop = async () => {
+      if (!mounted) return;
+      try {
+        const video = videoRef.current;
+        if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
+          timer = setTimeout(scanLoop, 500);
+          return;
+        }
+
+        const Detector = (window as any).BarcodeDetector;
+        if (!Detector) {
+          timer = setTimeout(scanLoop, 1000);
+          return;
+        }
+
+        const detector = new Detector({ formats: ["qr_code"] });
+        const codes = await detector.detect(video);
+        if (Array.isArray(codes) && codes.length > 0) {
+          const raw = (codes[0].rawValue || "").trim();
+          const now = Date.now();
+          if (raw && now - lastQrScanAtRef.current > 5000 && !qrLoading) {
+            lastQrScanAtRef.current = now;
+            setQrInput(raw);
+            addDet({ time: new Date().toLocaleTimeString(), type: "info", message: `📱 QR scanned: ${raw.slice(0, 40)}${raw.length > 40 ? "..." : ""}` });
+            await fetch("/api/attendance/qr-mark", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+              body: JSON.stringify({ qrData: raw }),
+            }).then(async (res) => {
+              const data = await res.json().catch(() => ({}));
+              if (!res.ok || !data?.success) {
+                addDet({ time: new Date().toLocaleTimeString(), type: "fail", message: `❌ QR failed: ${data?.error || res.status}` });
+                return;
+              }
+              addDet({
+                time: new Date().toLocaleTimeString(),
+                type: "mark",
+                empName: data.employeeName,
+                empCode: data.employeeCode,
+                message: `✅ QR ${data.type === "CHECK_IN" ? "CHECK-IN" : "CHECK-OUT"} — ${data.employeeName} (${data.employeeCode}) at ${data.time}`,
+              });
+              fetchSheet();
+            });
+          }
+        }
+      } catch {}
+
+      timer = setTimeout(scanLoop, 800);
+    };
+
+    scanLoop();
+    return () => {
+      mounted = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [qrAutoScan, active, token, fetchSheet, qrLoading]);
+
   if (authLoading) return <div className="loading-wrap"><div className="spinner" /></div>;
   if (!token) return null;
 
@@ -410,11 +513,37 @@ function KioskContent() {
                 <button className="btn btn-danger" onClick={stopKiosk}>⏹ Stop</button>
               </>
             )}
+            <div style={{ display: "flex", gap: 6, alignItems: "center", marginLeft: 8 }}>
+              <input
+                value={qrInput}
+                onChange={(e) => setQrInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    markByQr();
+                  }
+                }}
+                placeholder="Scan or paste QR data"
+                style={{ minWidth: 220 }}
+              />
+              <button className="btn btn-outline" onClick={markByQr} disabled={qrLoading || !qrInput.trim()}>
+                {qrLoading ? "..." : "📱 QR Mark"}
+              </button>
+              <button
+                className="btn btn-outline"
+                onClick={() => setQrAutoScan((v) => !v)}
+                disabled={!qrSupported || !active}
+                title={!qrSupported ? "BarcodeDetector not supported in this browser" : "Auto scan QR from camera"}
+              >
+                {qrAutoScan ? "🟢 QR Auto ON" : "⚪ QR Auto OFF"}
+              </button>
+            </div>
           </div>
         </div>
 
         <div style={{ display: "flex", gap: 12, fontSize: 12, marginBottom: 8, color: "var(--text-muted)", flexWrap: "wrap" }}>
           <span>🤖 AI: {modelReady ? "✅ connected" : "⏳ warming..."}</span>
+          <span>📱 QR: use `HRMSQR:EMP_CODE` or plain `EMP_CODE`</span>
           <span>🏭 Industry-Grade v1.0 — Zero False Positives</span>
           <span>👥 Known: {known.length} employees</span>
           <span>📸 Captures: {capturingCount.current}</span>
