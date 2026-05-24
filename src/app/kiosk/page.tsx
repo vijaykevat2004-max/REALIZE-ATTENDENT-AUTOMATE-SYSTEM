@@ -26,7 +26,7 @@ interface DetectionInfo {
 }
 
 const MARK_COOLDOWN = 15000;
-const CAPTURE_INTERVAL = 600;
+const CAPTURE_INTERVAL = 700;
 const CLIENT_MIN_CONFIRMED_SIMILARITY = 0.88;
 const CLIENT_MIN_MARGIN = 0.18;
 const MOTION_THRESHOLD = 3;
@@ -237,14 +237,14 @@ function KioskContent() {
     try {
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
-      canvas.width = 480;
-      canvas.height = 360;
-      ctx.drawImage(video, 0, 0);
+      canvas.width = 640;
+      canvas.height = 480;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       checkTime = new Date().toLocaleTimeString();
       setDebugOverlay(d => ({ ...d, lastOk: `${canvas.width}x${canvas.height} @ ${checkTime}` }));
       addDet({ time: checkTime, type: "check", message: "Industry AI matching..." });
 
-      const blob = await new Promise<Blob>(resolve => canvas.toBlob(resolve!, "image/jpeg", 0.82));
+      const blob = await new Promise<Blob>(resolve => canvas.toBlob(resolve!, "image/jpeg", 0.86));
       const knownEmbeddings = known.map(e => ({
         employee_id: e.id,
         name: `${e.firstName} ${e.lastName}`,
@@ -311,7 +311,7 @@ function KioskContent() {
         confidence: Math.round(result.best_match!.similarity * 100),
         message: `✅ CONFIRMED — ${emp.firstName} ${emp.lastName} (${(result.best_match!.similarity * 100).toFixed(1)}%, margin: ${(result.margin * 100).toFixed(1)}%, ${result.temporal.frame_count} frames, ${elapsed}s)` });
 
-      const photoUrl = canvas.toDataURL("image/jpeg", 0.82);
+      const photoUrl = canvas.toDataURL("image/jpeg", 0.86);
       const markRes = await fetch("/api/attendance/face-mark", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
