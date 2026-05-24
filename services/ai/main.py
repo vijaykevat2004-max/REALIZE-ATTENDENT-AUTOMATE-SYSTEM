@@ -39,7 +39,10 @@ load_error = ""
 # Temporal buffer for verification
 TEMPORAL_BUFFER: Dict[str, List[dict]] = defaultdict(list)
 TEMPORAL_WINDOW_MS = 10000  # 10 seconds
-MIN_CONSENSUS_FRAMES = 7
+MIN_CONSENSUS_FRAMES = 5
+FAST_TRACK_MIN_FRAMES = 3
+FAST_TRACK_SIMILARITY = 0.93
+FAST_TRACK_QUALITY = 0.65
 
 # Quality thresholds
 QUALITY_BLUR_MIN = 50.0
@@ -338,8 +341,18 @@ def temporal_verification(session_id: str, employee_id: str, similarity: float, 
         if entry["employee_id"] == employee_id
     ]
     
-    if len(recent) < MIN_CONSENSUS_FRAMES:
+    if len(recent) < FAST_TRACK_MIN_FRAMES:
         return False, 0.0, len(recent)
+
+    # Fast-track for very strong matches to reduce kiosk latency.
+    fast_n = recent[-FAST_TRACK_MIN_FRAMES:]
+    fast_avg_sim = sum(e["similarity"] for e in fast_n) / len(fast_n)
+    fast_avg_quality = sum(e["quality"] for e in fast_n) / len(fast_n)
+    if fast_avg_sim >= FAST_TRACK_SIMILARITY and fast_avg_quality >= FAST_TRACK_QUALITY:
+        return True, fast_avg_sim, len(recent)
+
+    if len(recent) < MIN_CONSENSUS_FRAMES:
+        return False, fast_avg_sim, len(recent)
     
     # Check last MIN_CONSENSUS_FRAMES
     last_n = recent[-MIN_CONSENSUS_FRAMES:]
