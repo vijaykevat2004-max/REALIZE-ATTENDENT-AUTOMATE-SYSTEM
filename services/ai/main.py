@@ -19,12 +19,10 @@ import time
 import base64
 from collections import defaultdict
 import json
-from modules.quality import assess_quality as assess_quality_module
 from modules.liveness import assess_liveness as assess_liveness_module
 from modules.matcher import match_against_known as match_against_known_module
 from modules.timing import StageTimer
-from modules.detector import select_primary_face
-from modules.alignment import extract_landmarks
+from modules.face_analyzer import FaceAnalyzer
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("hrms-ai-industry")
@@ -38,9 +36,7 @@ YUNET_PATH = os.path.join(BASE_DIR, "yunet.onnx")
 SFACE_PATH = os.path.join(BASE_DIR, "sface.onnx")
 
 # Global state
-detector = None
-recognizer = None
-load_error = ""
+analyzer = None
 
 # Temporal buffer for verification
 TEMPORAL_BUFFER: Dict[str, List[dict]] = defaultdict(list)
@@ -73,29 +69,19 @@ def assess_liveness(img, face_box):
 
 @app.on_event("startup")
 async def startup():
-    global detector, recognizer, load_error
+    global analyzer
     logger.info(f"OpenCV version: {cv2.__version__}")
     logger.info(f"YuNet path: {YUNET_PATH} (exists: {os.path.exists(YUNET_PATH)}, size: {os.path.getsize(YUNET_PATH) if os.path.exists(YUNET_PATH) else 0})")
     logger.info(f"SFace path: {SFACE_PATH} (exists: {os.path.exists(SFACE_PATH)}, size: {os.path.getsize(SFACE_PATH) if os.path.exists(SFACE_PATH) else 0})")
     
-    try:
-        detector = cv2.FaceDetectorYN.create(YUNET_PATH, "", (320, 320), 0.9, 0.3, 5000)
-        logger.info("✅ YuNet detector created")
-    except Exception as e:
-        load_error += f"YuNet: {e}. "
-        logger.error(f"❌ YuNet failed: {e}")
-    
-    try:
-        recognizer = cv2.FaceRecognizerSF.create(SFACE_PATH, "")
-        logger.info("✅ SFace recognizer created")
-    except Exception as e:
-        load_error += f"SFace: {e}. "
-        logger.error(f"❌ SFace failed: {e}")
-    
-    if not load_error:
-        logger.info("✅ All models loaded! Industry-grade system ready.")
-    else:
-        logger.error(f"❌ Errors: {load_error}")
+    analyzer = FaceAnalyzer(
+        quality_blur_min=QUALITY_BLUR_MIN,
+        quality_bright_min=QUALITY_BRIGHT_MIN,
+        quality_bright_max=QUALITY_BRIGHT_MAX,
+        quality_face_min_size=QUALITY_FACE_MIN_SIZE,
+        max_second_face_score_ratio=MAX_SECOND_FACE_SCORE_RATIO,
+    )
+    analyzer.initialize(YUNET_PATH, SFACE_PATH)
 
 def py(val):
     if isinstance(val, np.ndarray): return val.tolist()
@@ -112,55 +98,10 @@ def ok(data, status=200):
 def load_img(data: bytes):
     return cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
 
-def assess_quality(img, face_box):
-    return assess_quality_module(
-        img,
-        face_box,
-        QUALITY_BLUR_MIN,
-        QUALITY_BRIGHT_MIN,
-        QUALITY_BRIGHT_MAX,
-        QUALITY_FACE_MIN_SIZE,
-    )
-
 def detect_and_encode(img):
-    """Detect face and generate embedding with quality assessment"""
-    if detector is None or recognizer is None:
+    if analyzer is None or not analyzer.is_ready():
         return None, 0, None, None, {"face_count": 0, "ambiguous_scene": False}
-    
-    h, w = img.shape[:2]
-    if h < 30 or w < 30:
-        return None, 0, None, None, {"face_count": 0, "ambiguous_scene": False}
-    
-    detector.setInputSize((w, h))
-    _, faces = detector.detect(img)
-    
-    if faces is None or len(faces) == 0:
-        return None, 0, None, None, {"face_count": 0, "ambiguous_scene": False}
-
-    best, scene = select_primary_face(faces, w, h, MAX_SECOND_FACE_SCORE_RATIO)
-    face_count = scene["face_count"]
-    ambiguous_scene = scene["ambiguous_scene"]
-
-    conf = float(best[14])
-    
-    # Quality assessment
-    quality = assess_quality(img, best)
-    
-    # Extract embedding
-    landmarks = extract_landmarks(best)
-    aligned = recognizer.alignCrop(img, landmarks)
-    embedding = recognizer.feature(aligned)
-    
-    # Normalize embedding
-    norm = np.linalg.norm(embedding)
-    if norm > 0:
-        embedding = embedding / norm
-    
-    box = [int(best[0]), int(best[1]), int(best[2]), int(best[3])]
-    return box, conf, embedding.flatten().astype(np.float32), quality, {
-        "face_count": face_count,
-        "ambiguous_scene": ambiguous_scene,
-    }
+    return analyzer.detect_and_encode(img)
 
 def compute_similarity(a, b):
     from modules.matcher import compute_similarity as compute_similarity_module
@@ -253,8 +194,8 @@ async def industry_match_json(req: dict):
             return ok({"success": False, "message": "Invalid image"}, 400)
         timer.mark("decode_image")
         
-        if detector is None or recognizer is None:
-            return ok({"success": False, "message": f"Model not loaded: {load_error}"}, 500)
+        if analyzer is None or not analyzer.is_ready():
+            return ok({"success": False, "message": f"Model not loaded: {analyzer.load_error if analyzer else ''}"}, 500)
         
         # Step 1: Detect and encode
         box, conf, embedding, quality, scene = detect_and_encode(img)
@@ -444,8 +385,8 @@ async def encode_face(image: UploadFile = File(...)):
             return ok({"success": False, "message": "Invalid image"}, 400)
         timer.mark("decode_image")
         
-        if detector is None or recognizer is None:
-            return ok({"success": False, "message": f"Model not loaded: {load_error}"}, 500)
+        if analyzer is None or not analyzer.is_ready():
+            return ok({"success": False, "message": f"Model not loaded: {analyzer.load_error if analyzer else ''}"}, 500)
         
         box, conf, embedding, quality, scene = detect_and_encode(img)
         timer.mark("detect_encode")
@@ -527,23 +468,30 @@ async def encode_multi_face(images: List[UploadFile] = File(...)):
 
 @app.get("/health")
 def health():
+    ready = analyzer is not None and analyzer.is_ready()
+    mode = analyzer.mode if analyzer else "not_initialized"
+    error = analyzer.load_error if analyzer else "not_initialized"
     return ok({
-        "ok": detector is not None and recognizer is not None,
-        "model": "yunet+sface-industry-strict",
-        "detector_loaded": detector is not None,
-        "recognizer_loaded": recognizer is not None,
-        "error": load_error,
+        "ok": ready,
+        "model": mode,
+        "detector_loaded": ready,
+        "recognizer_loaded": ready,
+        "error": error,
         "opencv": cv2.__version__,
         "version": "4.0.0-industry-strict",
-        "features": ["industry-match-json", "encode-face", "encode-multi", "quality-gate", "temporal-verification", "single-face-gate", "liveness-gate"],
+        "mode": mode,
+        "features": ["industry-match-json", "encode-face", "encode-multi", "quality-gate", "temporal-verification", "single-face-gate", "liveness-gate", "insightface-fallback"],
     })
 
 @app.get("/")
 def root():
+    ready = analyzer is not None and analyzer.is_ready()
+    mode = analyzer.mode if analyzer else "not_initialized"
+    error = analyzer.load_error if analyzer else "not_initialized"
     return ok({
         "service": "HRMS AI Industry v2.0",
-        "detector": detector is not None,
-        "recognizer": recognizer is not None,
-        "error": load_error,
+        "ready": ready,
+        "mode": mode,
+        "error": error,
         "endpoints": ["/health", "/encode-face", "/encode-multi", "/industry-match-json"],
     })
